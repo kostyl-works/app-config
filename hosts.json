@@ -8,7 +8,8 @@
     "https://superapi.litnet.com"
   ],
   "web": [
-    "https://litnet.com"
+    "https://litnet.com",
+    "https://yandex.ru"
   ],
   "oauth": [
     "https://id.litnet.com"
