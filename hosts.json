@@ -1,18 +1,15 @@
 {
   "api": [
-    "https://sapi.litnet.com",
-    "https://google.com",
-    "https://yandex.com"
+    "https://sapi.litnet.com"
   ],
   "superapi": [
     "https://superapi.litnet.com"
   ],
   "web": [
-    "https://litnet.com",
-    "https://yanex.ru"
+    "https://litnet.com"
   ],
   "oauth": [
-    "https://id.litnt.com"
+    "https://id.litnet.com"
   ],
   "cdn": [
     "https://publiccdn.litnet.com"
