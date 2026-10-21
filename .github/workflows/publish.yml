@@ -1,8 +1,8 @@
 name: Publish hosts
 run-name: "hosts: ${{ github.event.head_commit.message || 'ручной запуск' }} (${{ github.actor }})"
 
-# Публикуется ровно то, что лежит в hosts.json на main. Правка файла в браузере
-# запускает публикацию; ручной запуск — для первой публикации и повтора.
+# Правка hosts.json в main → CI кладёт рядом config.json с новой версией и ставит тег.
+# Ручной запуск — для первой публикации и повтора.
 on:
   push:
     branches: [main]
@@ -25,21 +25,11 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Публиковать могут только те, у кого есть запись в репозиторий:
-    # пуш в main и ручной запуск GitHub даёт только им.
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-          path: src
-          persist-credentials: false
-
-      - name: Checkout dist
-        uses: actions/checkout@v4
-        with:
-          ref: dist
-          path: dist
+          ref: main
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -47,15 +37,15 @@ jobs:
 
       - name: Check hosts
         if: ${{ !inputs.skip_check }}
-        run: node src/scripts/check-hosts.mjs src/hosts.json dist/config.json
+        run: node scripts/check-hosts.mjs hosts.json config.json
 
       - name: Build
         id: build
-        run: node src/scripts/build.mjs --hosts src/hosts.json --dist dist
+        run: node scripts/build.mjs --hosts hosts.json --out config.json
 
       - name: Commit, tag, push
         if: steps.build.outputs.changed == 'true'
         env:
           VERSION: ${{ steps.build.outputs.version }}
           MESSAGE: ${{ github.event.head_commit.message || 'ручной запуск' }}
-        run: bash src/scripts/release.sh
+        run: bash scripts/release.sh

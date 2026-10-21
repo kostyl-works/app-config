@@ -3,7 +3,7 @@
 // есть DNS и валидный TLS. Уже опубликованные не проверяем: аварийная смена api не должна
 // падать из-за того, что сломался какой-то другой, давно опубликованный хост.
 // Доступность из РФ так не проверить — только опечатки, мёртвые домены и битые сертификаты.
-//   node scripts/check-hosts.mjs hosts.json [dist/config.json]
+//   node scripts/check-hosts.mjs hosts.json [config.json]
 import { existsSync } from 'node:fs';
 import { ROLES, readJson, validateHosts } from './lib.mjs';
 

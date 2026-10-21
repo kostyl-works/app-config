@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 // Собирает следующий config.json из hosts.json: если хосты отличаются от опубликованных
-// в ветке dist, ставит version = опубликованная + 1. Номер версии людьми не правится,
+// в config.json, ставит version = опубликованная + 1. Номер версии людьми не правится,
 // чтобы его нельзя было забыть.
 //
 // Подписи пока нет. Когда понадобится, она ляжет рядом отдельным файлом config.json.sig,
 // а формат config.json не изменится — уже выпущенные сборки приложения не сломаются.
 //
-//   node scripts/build.mjs --hosts hosts.json --dist dist
+//   node scripts/build.mjs --hosts hosts.json --out config.json
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { MAX_CONFIG_BYTES, ROLES, pickRoles, readJson, validateHosts } from './lib.mjs';
 
 const { values: args } = parseArgs({
   options: {
     hosts: { type: 'string', default: 'hosts.json' },
-    dist: { type: 'string', default: 'dist' },
+    out: { type: 'string', default: 'config.json' },
   },
 });
 
@@ -35,7 +34,7 @@ try {
   fail(error.message);
 }
 
-const configPath = join(args.dist, 'config.json');
+const configPath = args.out;
 const current = existsSync(configPath) ? readJson(configPath) : null;
 
 if (current && JSON.stringify(pickRoles(current)) === JSON.stringify(desired)) {
