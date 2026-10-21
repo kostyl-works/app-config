@@ -1,7 +1,7 @@
 {
   "api": [
     "https://sapi.litnet.com",
-    "https://sapi.litnet.ru"
+    "https://google.com"
   ],
   "superapi": [
     "https://superapi.litnet.com"
