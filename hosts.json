@@ -1,7 +1,8 @@
 {
   "api": [
     "https://sapi.litnet.com",
-    "https://google.com"
+    "https://google.com",
+    "https://mail.com"
   ],
   "superapi": [
     "https://superapi.litnet.com"
