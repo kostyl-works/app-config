@@ -1,0 +1,61 @@
+name: Publish hosts
+run-name: "hosts: ${{ github.event.head_commit.message || 'ручной запуск' }} (${{ github.actor }})"
+
+# Публикуется ровно то, что лежит в hosts.json на main. Правка файла в браузере
+# запускает публикацию; ручной запуск — для первой публикации и повтора.
+on:
+  push:
+    branches: [main]
+    paths: [hosts.json]
+  workflow_dispatch:
+    inputs:
+      skip_check:
+        description: Не проверять хосты с раннера (хост ещё не поднят специально)
+        type: boolean
+        default: false
+
+# Одна публикация за раз: иначе два запуска возьмут один номер версии.
+concurrency:
+  group: cfg-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Публиковать могут только те, у кого есть запись в репозиторий:
+    # пуш в main и ручной запуск GitHub даёт только им.
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: src
+          persist-credentials: false
+
+      - name: Checkout dist
+        uses: actions/checkout@v4
+        with:
+          ref: dist
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check hosts
+        if: ${{ !inputs.skip_check }}
+        run: node src/scripts/check-hosts.mjs src/hosts.json dist/config.json
+
+      - name: Build
+        id: build
+        run: node src/scripts/build.mjs --hosts src/hosts.json --dist dist
+
+      - name: Commit, tag, push
+        if: steps.build.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+          MESSAGE: ${{ github.event.head_commit.message || 'ручной запуск' }}
+        run: bash src/scripts/release.sh
