@@ -1,6 +1,7 @@
 {
   "api": [
-    "https://sapi.litnet.com"
+    "https://sapi.litnet.com",
+    "https://ya.ru"
   ],
   "superapi": [
     "https://superapi.litnet.com"
