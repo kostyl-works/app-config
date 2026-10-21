@@ -2,7 +2,7 @@
   "api": [
     "https://sapi.litnet.com",
     "https://google.com",
-    "https://mail.com"
+    "https://yandex.com"
   ],
   "superapi": [
     "https://superapi.litnet.com"
