@@ -5,12 +5,12 @@
 // Доступность из РФ так не проверить — только опечатки, мёртвые домены и битые сертификаты.
 //   node scripts/check-hosts.mjs hosts.json [config.json]
 import { existsSync } from 'node:fs';
-import { ROLES, readJson, validateHosts } from './lib.mjs';
+import { ROLES, readJson, validateSource } from './lib.mjs';
 
 const [hostsPath = 'hosts.json', publishedPath] = process.argv.slice(2);
 let hosts;
 try {
-  hosts = validateHosts(readJson(hostsPath));
+  hosts = validateSource(readJson(hostsPath));
 } catch (error) {
   console.error(`::error::${error.message}`);
   process.exit(1);

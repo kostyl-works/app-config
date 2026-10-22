@@ -1,4 +1,5 @@
 {
+  "enabled": false,
   "api": [
     "https://sapi.litnet.com"
   ],

@@ -9,7 +9,7 @@
 //   node scripts/build.mjs --hosts hosts.json --out config.json
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { MAX_CONFIG_BYTES, ROLES, pickRoles, readJson, validateHosts } from './lib.mjs';
+import { MAX_CONFIG_BYTES, ROLES, pickContent, readJson, validateSource } from './lib.mjs';
 
 const { values: args } = parseArgs({
   options: {
@@ -29,7 +29,7 @@ function output(name, value) {
 
 let desired;
 try {
-  desired = validateHosts(readJson(args.hosts));
+  desired = validateSource(readJson(args.hosts));
 } catch (error) {
   fail(error.message);
 }
@@ -37,8 +37,8 @@ try {
 const configPath = args.out;
 const current = existsSync(configPath) ? readJson(configPath) : null;
 
-if (current && JSON.stringify(pickRoles(current)) === JSON.stringify(desired)) {
-  console.log(`Хосты совпадают с опубликованной version ${current.version} — публиковать нечего.`);
+if (current && JSON.stringify(pickContent(current)) === JSON.stringify(desired)) {
+  console.log(`Конфиг совпадает с опубликованной version ${current.version} — публиковать нечего.`);
   output('changed', 'false');
   process.exit(0);
 }
@@ -53,6 +53,8 @@ output('changed', 'true');
 output('version', config.version);
 
 console.log(`version ${current?.version ?? '—'} → ${config.version}, ${bytes} байт`);
+const enabledMark = current?.enabled === config.enabled ? '  ' : '* ';
+console.log(`${enabledMark}${'enabled'.padEnd(10)} ${config.enabled}`);
 for (const role of ROLES) {
   const before = (current?.[role] ?? []).join(', ');
   const after = desired[role].join(', ');

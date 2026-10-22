@@ -54,9 +54,23 @@ export function validateHosts(hosts) {
   return result;
 }
 
-/** Только роли из опубликованного конфига, без version — для сравнения «изменилось ли что-то». */
-export function pickRoles(config) {
-  return Object.fromEntries(ROLES.map((role) => [role, config[role]]));
+/**
+ * hosts.json целиком: флаг enabled + хосты по ролям.
+ * enabled=false — приложение игнорирует конфиг и живёт на встроенных адресах;
+ * enabled=true — конфиг главнее встроенных адресов.
+ */
+export function validateSource(source) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error('ожидается объект {"enabled": false, "роль": ["https://хост", ...]}');
+  }
+  const { enabled, ...hosts } = source;
+  if (typeof enabled !== 'boolean') throw new Error('enabled: нужно true или false (без кавычек)');
+  return { enabled, ...validateHosts(hosts) };
+}
+
+/** Содержимое опубликованного конфига без version — для сравнения «изменилось ли что-то». */
+export function pickContent(config) {
+  return { enabled: config.enabled, ...Object.fromEntries(ROLES.map((role) => [role, config[role]])) };
 }
 
 /** JSON с понятной ошибкой: hosts.json правят руками в браузере. */
