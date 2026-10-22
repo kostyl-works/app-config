@@ -53,8 +53,8 @@ output('changed', 'true');
 output('version', config.version);
 
 console.log(`version ${current?.version ?? '—'} → ${config.version}, ${bytes} байт`);
-const enabledMark = current?.enabled === config.enabled ? '  ' : '* ';
-console.log(`${enabledMark}${'enabled'.padEnd(10)} ${config.enabled}`);
+const flagMark = current?.endpoints_enabled === config.endpoints_enabled ? '  ' : '* ';
+console.log(`${flagMark}endpoints_enabled ${config.endpoints_enabled}`);
 for (const role of ROLES) {
   const before = (current?.[role] ?? []).join(', ');
   const after = desired[role].join(', ');

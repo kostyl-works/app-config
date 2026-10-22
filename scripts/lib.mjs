@@ -55,22 +55,28 @@ export function validateHosts(hosts) {
 }
 
 /**
- * hosts.json целиком: флаг enabled + хосты по ролям.
- * enabled=false — приложение игнорирует конфиг и живёт на встроенных адресах;
- * enabled=true — конфиг главнее встроенных адресов.
+ * hosts.json целиком: флаг endpoints_enabled + хосты по ролям.
+ * Флаг касается только адресов: false — приложение игнорирует хосты из конфига и живёт
+ * на встроенных; true — хосты из конфига главнее встроенных. Другие разделы (например,
+ * будущее управление прокси) получат свои флаги.
  */
 export function validateSource(source) {
   if (!source || typeof source !== 'object' || Array.isArray(source)) {
-    throw new Error('ожидается объект {"enabled": false, "роль": ["https://хост", ...]}');
+    throw new Error('ожидается объект {"endpoints_enabled": false, "роль": ["https://хост", ...]}');
   }
-  const { enabled, ...hosts } = source;
-  if (typeof enabled !== 'boolean') throw new Error('enabled: нужно true или false (без кавычек)');
-  return { enabled, ...validateHosts(hosts) };
+  const { endpoints_enabled: endpointsEnabled, ...hosts } = source;
+  if (typeof endpointsEnabled !== 'boolean') {
+    throw new Error('endpoints_enabled: нужно true или false (без кавычек)');
+  }
+  return { endpoints_enabled: endpointsEnabled, ...validateHosts(hosts) };
 }
 
 /** Содержимое опубликованного конфига без version — для сравнения «изменилось ли что-то». */
 export function pickContent(config) {
-  return { enabled: config.enabled, ...Object.fromEntries(ROLES.map((role) => [role, config[role]])) };
+  return {
+    endpoints_enabled: config.endpoints_enabled,
+    ...Object.fromEntries(ROLES.map((role) => [role, config[role]])),
+  };
 }
 
 /** JSON с понятной ошибкой: hosts.json правят руками в браузере. */
