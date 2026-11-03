@@ -1,13 +1,14 @@
 {
-  "endpoints_enabled": false,
+  "endpoints_enabled": true,
   "api": [
-    "https://sapi.litnet.com"
+    "https://sapi.litnet.com",
+    "https://api-litnet.storytest.ru"
   ],
   "superapi": [
-    "https://superapi.litnet.com"
+    "https://superapi-litnet.storytest.ru"
   ],
   "web": [
-    "https://litnet.com"
+    "https://litnet.storytest.ru"
   ],
   "oauth": [
     "https://id.litnet.com"
