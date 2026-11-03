@@ -1,7 +1,6 @@
 {
   "endpoints_enabled": true,
   "api": [
-    "https://sapi.litnet.com",
     "https://api-litnet.storytest.ru"
   ],
   "superapi": [
