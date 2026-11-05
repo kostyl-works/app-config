@@ -1,1 +1,1 @@
-{"version":8,"endpoints_enabled":true,"api":["https://api-litnet.storytest.ru"],"superapi":["https://superapi-litnet.storytest.ru"],"web":["https://litnet.storytest.ru"],"oauth":["https://id.litnet.com"],"cdn":["https://publiccdn.litnet.com"],"analytics":["https://osc.litnet.com"]}
+{"version":9,"endpoints_enabled":true,"api":["https://api-litnet.storytest.ru"],"superapi":["https://superapi-litnet.storytest.ru"],"web":["https://litnet.storytest.ru"],"oauth":["https://id-litnet.storytest.ru"],"cdn":["https://publiccdn.litnet.com"],"analytics":["https://osc.litnet.com"]}
