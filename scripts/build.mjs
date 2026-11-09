@@ -40,6 +40,8 @@ const current = existsSync(configPath) ? readJson(configPath) : null;
 if (current && JSON.stringify(pickContent(current)) === JSON.stringify(desired)) {
   console.log(`Конфиг совпадает с опубликованной version ${current.version} — публиковать нечего.`);
   output('changed', 'false');
+  // Версия нужна и без изменений: при первом запуске тег может ещё не существовать.
+  output('version', current.version);
   process.exit(0);
 }
 

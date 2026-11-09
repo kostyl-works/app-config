@@ -1,30 +1,65 @@
 name: Publish hosts
-run-name: "hosts: ${{ github.event.head_commit.message || 'ручной запуск' }} (${{ github.actor }})"
+run-name: "hosts (${{ inputs.environment || 'auto' }}): ${{ github.event.head_commit.message || 'ручной запуск' }} (${{ github.actor }})"
 
-# Правка hosts.json в main → CI кладёт рядом config.json с новой версией и ставит тег.
-# Ручной запуск — для первой публикации и повтора.
+# Оба окружения живут в main. Публикуем только те, чьи hosts.json изменились.
 on:
   push:
     branches: [main]
-    paths: [hosts.json]
+    paths: [hosts.json, dev/hosts.json]
   workflow_dispatch:
     inputs:
+      environment:
+        description: Какое окружение опубликовать
+        type: choice
+        required: true
+        default: dev
+        options: [dev, prod]
       skip_check:
         description: Не проверять хосты с раннера (хост ещё не поднят специально)
         type: boolean
         default: false
 
-# Одна публикация за раз: иначе два запуска возьмут один номер версии.
+# Оба окружения коммитят в main. Не отменяем ожидающие запуски другого окружения.
 concurrency:
   group: cfg-publish
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: write
 
 jobs:
-  publish:
+  select:
     runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.select.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Select environments
+        id: select
+        run: node scripts/select-environments.mjs
+
+  publish:
+    name: Publish ${{ matrix.environment }}
+    needs: select
+    if: needs.select.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        environment: ${{ fromJSON(needs.select.outputs.environments) }}
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      HOSTS_PATH: ${{ matrix.environment == 'prod' && 'hosts.json' || 'dev/hosts.json' }}
+      CONFIG_PATH: ${{ matrix.environment == 'prod' && 'config.json' || 'dev/config.json' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,14 +72,13 @@ jobs:
 
       - name: Check hosts
         if: ${{ !inputs.skip_check }}
-        run: node scripts/check-hosts.mjs hosts.json config.json
+        run: node scripts/check-hosts.mjs "$HOSTS_PATH" "$CONFIG_PATH"
 
       - name: Build
         id: build
-        run: node scripts/build.mjs --hosts hosts.json --out config.json
+        run: node scripts/build.mjs --hosts "$HOSTS_PATH" --out "$CONFIG_PATH"
 
       - name: Commit, tag, push
-        if: steps.build.outputs.changed == 'true'
         env:
           VERSION: ${{ steps.build.outputs.version }}
           MESSAGE: ${{ github.event.head_commit.message || 'ручной запуск' }}

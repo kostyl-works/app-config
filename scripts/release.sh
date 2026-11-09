@@ -1,39 +1,69 @@
 #!/usr/bin/env bash
-# Коммитит config.json в main, ставит тег 1.0.<version> и пушит; пишет итог в summary.
-# Тег — голая версия "1.0.<version>" без "v": так jsDelivr-адрес @1.0.<version> совпадает
-# с именем тега один в один, а диапазон @1 считается по semver.
-#   VERSION=42 MESSAGE="..." bash scripts/release.sh
+# Публикует выбранный конфиг в main и создаёт неизменяемый тег.
+#   ENVIRONMENT=dev VERSION=1 MESSAGE="..." bash scripts/release.sh
 set -euo pipefail
 : "${VERSION:?VERSION не задан}"
 : "${MESSAGE:?MESSAGE не задан}"
-TAG="1.0.${VERSION}"
+ENVIRONMENT="${ENVIRONMENT:-prod}"
 
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git add config.json
-git commit -q -m "config: version ${VERSION}" -m "${MESSAGE}"
-# Пока шла сборка, в main мог прийти чужой коммит. Бот трогает только config.json,
-# люди — hosts.json, поэтому rebase проходит без конфликтов.
-git pull -q --rebase origin main
-git tag "${TAG}"
-git push -q origin HEAD:main "refs/tags/${TAG}"
+case "$ENVIRONMENT" in
+  prod) CONFIG_PATH="config.json"; TAG="1.0.${VERSION}" ;;
+  dev) CONFIG_PATH="dev/config.json"; TAG="dev-1.0.${VERSION}" ;;
+  *) echo "::error::Неизвестное окружение: ${ENVIRONMENT}"; exit 1 ;;
+esac
 
-# Purge — только ускоритель для @1: приложение спрашивает точную версию @1.0.<version+1>,
-# которой purge не нужен. Без выданного jsDelivr доступа вернёт ошибку — не страшно.
-curl -sS --max-time 30 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@1/config.json" || true
-echo
+# Тег должен соответствовать версии внутри JSON.
+node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const [path, version] = process.argv.slice(1);
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  if (!Number.isSafeInteger(config.version) || config.version < 1 || String(config.version) !== version) {
+    console.error(`::error::VERSION ${version} не совпадает с положительной целой version в ${path}`);
+    process.exit(1);
+  }
+' "$CONFIG_PATH" "$VERSION"
+
+PUBLISHED=false
+if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+  # Повторный запуск — без нового коммита и без перемещения существующего тега.
+  if ! git show "${TAG}:${CONFIG_PATH}" | cmp -s "$CONFIG_PATH" -; then
+    echo "::error::Тег ${TAG} уже существует с другим конфигом. Опубликованные теги не перезаписываются."
+    exit 1
+  fi
+  echo "${ENVIRONMENT}: version ${VERSION} уже опубликована (${TAG})."
+else
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  git add -- "$CONFIG_PATH"
+  if ! git diff --cached --quiet -- "$CONFIG_PATH"; then
+    git commit -q --only -m "config (${ENVIRONMENT}): version ${VERSION}" -m "$MESSAGE" -- "$CONFIG_PATH"
+  fi
+  # Люди меняют hosts.json, бот — config.json. Забираем новые коммиты перед тегом.
+  git pull -q --rebase origin main
+  git tag "$TAG"
+  # Конфиг и тег должны попасть на GitHub вместе, в том числе при повторе после ошибки.
+  git push -q --atomic origin HEAD:main "refs/tags/${TAG}"
+  PUBLISHED=true
+fi
+
+# У dev — только точные теги, которые не входят в prod-диапазон @1.
+# Purge prod-диапазона — ускоритель: точным версиям он не нужен.
+if [ "$ENVIRONMENT" = prod ] && [ "$PUBLISHED" = true ]; then
+  curl -sS --max-time 30 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@1/config.json" || true
+  echo
+fi
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
-    echo "### Опубликована version ${VERSION}"
+    echo "### ${ENVIRONMENT}: version ${VERSION} (${TAG})"
     echo
-    echo "- jsDelivr: https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@${TAG}/config.json"
-    echo "- raw: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/config.json"
+    echo "- jsDelivr: https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@${TAG}/${CONFIG_PATH}"
+    echo "- raw (main): https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/${CONFIG_PATH}"
     echo
-    echo "**Шаг 2 — Varioqub.** Вставьте строку ниже целиком в флаг \`endpoints_config\`:"
+    echo "**Шаг 2 — Varioqub (${ENVIRONMENT}).** Вставьте строку ниже целиком в флаг \`endpoints_config\` соответствующего окружения:"
     echo
-    echo '```'
-    cat config.json
+    echo '```json'
+    cat "$CONFIG_PATH"
     echo '```'
   } >> "${GITHUB_STEP_SUMMARY}"
 fi
