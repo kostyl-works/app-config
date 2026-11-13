@@ -4,20 +4,20 @@
 //
 // Токен доступа Rutube живёт недолго — получаем свежий по refresh-токену (он ОДНОРАЗОВЫЙ:
 // Rutube отдаёт новый, старый гаснет). Новый refresh-токен ОБЯЗАТЕЛЬНО сохраняем обратно в
-// секрет RUTUBE_TOKENS, иначе следующий прогон упадёт. Запись секрета делает отдельный PAT.
+// секрет своего окружения (RUTUBE_TOKENS_PROD / RUTUBE_TOKENS_DEV), иначе следующий прогон
+// упадёт. Запись секрета делает отдельный PAT.
 //
-//   CIPHER_KEY=<base64url> RUTUBE_TOKENS='{"dev":"<refresh>"}' GH_PAT=<pat> \
+//   ENVIRONMENT=dev CIPHER_KEY=<base64url> RUTUBE_TOKENS_DEV='{"dev":"<refresh>"}' GH_PAT=<pat> \
 //   GITHUB_REPOSITORY=kostyl-works/app-config \
 //     node scripts/rutube-publish.mjs --config dev/config.json --rutube dev/rutube.json
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { RUTUBE_BEGIN, RUTUBE_END, rutubeDescription, streamCipher } from './crypto.mjs';
-import { readJson } from './lib.mjs';
+import { readJson, rutubeTokenSource } from './lib.mjs';
 
 const MANUAL = 'docs/features/dynamic-base-url/rutube/05_refresh_token_manual.md (в репозитории приложения)';
 const TOKEN_ENDPOINT = 'https://rutube.ru/multipass/api/v3/accounts/token/';
-const SECRET = 'RUTUBE_TOKENS';
 
 const { values: args } = parseArgs({
   options: {
@@ -35,13 +35,27 @@ const cipherKeyB64 = process.env.CIPHER_KEY;
 if (!cipherKeyB64) fail('нет CIPHER_KEY (секрет CIPHER_KEY_PROD / CIPHER_KEY_DEV).');
 const cipherKey = Buffer.from(cipherKeyB64, 'base64url');
 
+let source;
+try {
+  source = rutubeTokenSource(process.env.ENVIRONMENT, process.env);
+} catch (error) {
+  fail(`${error.message}. Переменная ENVIRONMENT приходит из matrix в publish.yml.`);
+}
+const SECRET = source.secret;
+if (!source.raw) {
+  fail(
+    `секрет ${SECRET} не задан или пуст. Положи в него JSON вида {"<метка>":"<refresh-токен>"} — ` +
+      `метка та же, что "token" у видео в rutube.json. Токен получают по мануалу: ${MANUAL}`,
+  );
+}
+
 let tokens;
 try {
-  tokens = JSON.parse(process.env.RUTUBE_TOKENS ?? '');
+  tokens = JSON.parse(source.raw);
   if (!tokens || typeof tokens !== 'object') throw new Error('ожидается объект {"метка":"<refresh-токен>"}');
 } catch (error) {
   fail(
-    `секрет ${SECRET} не разбирается (${error.message}). Это JSON вида {"dev":"<refresh-токен>"}. ` +
+    `секрет ${SECRET} не разбирается (${error.message}). Это JSON вида {"<метка>":"<refresh-токен>"}. ` +
       `Свежий токен получают по мануалу: ${MANUAL}`,
   );
 }

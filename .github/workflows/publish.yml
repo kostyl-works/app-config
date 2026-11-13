@@ -90,10 +90,14 @@ jobs:
 
       # Разливаем тот же подписанный конверт в описания видео Rutube (запасной канал при
       # «белых списках»). Только если конфиг изменился. Токен ротируется и пишется обратно
-      # в секрет RUTUBE_TOKENS через PAT (секрет GH_PAT).
+      # в секрет своего окружения через PAT (секрет GH_PAT). Каждая задача получает токены
+      # только своего окружения; выбор — в rutubeTokenSource (scripts/lib.mjs).
+      # RUTUBE_TOKENS_LEGACY — старый общий секрет: dev читает его, пока нет RUTUBE_TOKENS_DEV.
       - name: Publish to Rutube
         if: steps.build.outputs.changed == 'true'
         env:
-          RUTUBE_TOKENS: ${{ secrets.RUTUBE_TOKENS }}
+          RUTUBE_TOKENS_PROD: ${{ matrix.environment == 'prod' && secrets.RUTUBE_TOKENS_PROD || '' }}
+          RUTUBE_TOKENS_DEV: ${{ matrix.environment == 'dev' && secrets.RUTUBE_TOKENS_DEV || '' }}
+          RUTUBE_TOKENS_LEGACY: ${{ matrix.environment == 'dev' && secrets.RUTUBE_TOKENS || '' }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: node scripts/rutube-publish.mjs --config "$CONFIG_PATH" --rutube "$RUTUBE_PATH"

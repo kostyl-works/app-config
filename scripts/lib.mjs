@@ -109,3 +109,23 @@ export function unwrapEnvelope(parsed) {
 export function readInnerConfig(path) {
   return existsSync(path) ? unwrapEnvelope(readJson(path)) : null;
 }
+
+/**
+ * Секрет refresh-токенов Rutube — свой у каждого окружения, как ключи подписи. Общий словарь
+ * нельзя: секрет GitHub не читается, слить в него новую метку нельзя, а запись обратно целиком
+ * перетёрла бы чужие метки. dev, пока нет RUTUBE_TOKENS_DEV, читает старый общий RUTUBE_TOKENS
+ * (в env — RUTUBE_TOKENS_LEGACY) и после ротации пишет уже в RUTUBE_TOKENS_DEV.
+ * @returns {{secret: string, raw: string}} имя секрета для записи обратно и его значение
+ */
+export function rutubeTokenSource(environment, env) {
+  if (environment === 'prod') {
+    return { secret: 'RUTUBE_TOKENS_PROD', raw: env.RUTUBE_TOKENS_PROD ?? '' };
+  }
+  if (environment === 'dev') {
+    return {
+      secret: 'RUTUBE_TOKENS_DEV',
+      raw: env.RUTUBE_TOKENS_DEV || env.RUTUBE_TOKENS_LEGACY || '',
+    };
+  }
+  throw new Error(`неизвестное окружение "${environment}" (ожидается prod или dev)`);
+}
