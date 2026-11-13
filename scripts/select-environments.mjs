@@ -26,9 +26,10 @@ try {
       ? ['ls-tree', '-r', '--name-only', after]
       : ['diff', '--name-only', '--no-renames', before, after, '--'];
     const paths = new Set(execFileSync('git', args, { encoding: 'utf8' }).trim().split('\n'));
+    // Окружение публикуем, если изменились его хосты или список видео Rutube (etag зависит от него).
     environments = [
-      ...(paths.has('hosts.json') ? ['prod'] : []),
-      ...(paths.has('dev/hosts.json') ? ['dev'] : []),
+      ...(paths.has('hosts.json') || paths.has('rutube.json') ? ['prod'] : []),
+      ...(paths.has('dev/hosts.json') || paths.has('dev/rutube.json') ? ['dev'] : []),
     ];
   } else {
     throw new Error(`Неподдерживаемое событие: ${process.env.GITHUB_EVENT_NAME}`);

@@ -5,7 +5,7 @@ run-name: "hosts (${{ inputs.environment || 'auto' }}): ${{ github.event.head_co
 on:
   push:
     branches: [main]
-    paths: [hosts.json, dev/hosts.json]
+    paths: [hosts.json, dev/hosts.json, rutube.json, dev/rutube.json]
   workflow_dispatch:
     inputs:
       environment:
@@ -60,6 +60,10 @@ jobs:
       ENVIRONMENT: ${{ matrix.environment }}
       HOSTS_PATH: ${{ matrix.environment == 'prod' && 'hosts.json' || 'dev/hosts.json' }}
       CONFIG_PATH: ${{ matrix.environment == 'prod' && 'config.json' || 'dev/config.json' }}
+      RUTUBE_PATH: ${{ matrix.environment == 'prod' && 'rutube.json' || 'dev/rutube.json' }}
+      # Ключи подписи и шифрования по окружению (SAM-809). Приватные — только здесь, из секретов.
+      SIGN_KEY: ${{ matrix.environment == 'prod' && secrets.SIGN_KEY_PROD || secrets.SIGN_KEY_DEV }}
+      CIPHER_KEY: ${{ matrix.environment == 'prod' && secrets.CIPHER_KEY_PROD || secrets.CIPHER_KEY_DEV }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,10 +80,20 @@ jobs:
 
       - name: Build
         id: build
-        run: node scripts/build.mjs --hosts "$HOSTS_PATH" --out "$CONFIG_PATH"
+        run: node scripts/build.mjs --hosts "$HOSTS_PATH" --out "$CONFIG_PATH" --rutube "$RUTUBE_PATH"
 
       - name: Commit, tag, push
         env:
           VERSION: ${{ steps.build.outputs.version }}
           MESSAGE: ${{ github.event.head_commit.message || 'ручной запуск' }}
         run: bash scripts/release.sh
+
+      # Разливаем тот же подписанный конверт в описания видео Rutube (запасной канал при
+      # «белых списках»). Только если конфиг изменился. Токен ротируется и пишется обратно
+      # в секрет RUTUBE_TOKENS через PAT (секрет GH_PAT).
+      - name: Publish to Rutube
+        if: steps.build.outputs.changed == 'true'
+        env:
+          RUTUBE_TOKENS: ${{ secrets.RUTUBE_TOKENS }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: node scripts/rutube-publish.mjs --config "$CONFIG_PATH" --rutube "$RUTUBE_PATH"

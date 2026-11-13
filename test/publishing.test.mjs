@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { unwrapEnvelope } from '../scripts/lib.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = {
@@ -12,6 +13,15 @@ const source = {
   ...Object.fromEntries(['api', 'superapi', 'web', 'oauth', 'cdn', 'analytics']
     .map((role) => [role, [`https://${role}.example.test`]])),
 };
+
+// Тестовые ключи подписи/шифрования (SAM-809): build.mjs требует их всегда.
+const SIGN_KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => i)).toString('base64url');
+const CIPHER_KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 7 + 3) & 0xff)).toString('base64url');
+
+/** Опубликованный config.json → внутренний конфиг (конверт разворачивается, legacy — как есть). */
+function inner(text) {
+  return unwrapEnvelope(JSON.parse(text));
+}
 
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
@@ -104,7 +114,7 @@ function build(f, environment) {
   writeFileSync(outputPath, '');
   ok(run(f.repo, process.execPath, [
     join(root, 'scripts/build.mjs'), '--hosts', `${prefix}hosts.json`, '--out', `${prefix}config.json`,
-  ], { GITHUB_OUTPUT: outputPath }));
+  ], { GITHUB_OUTPUT: outputPath, SIGN_KEY, CIPHER_KEY }));
   return Object.fromEntries(readFileSync(outputPath, 'utf8').trim().split('\n').map((line) => line.split('=')));
 }
 
@@ -162,7 +172,7 @@ test('dev bootstrap, updates, retries and prod updates publish independently to 
   assert.deepEqual(build(f, 'dev'), { changed: 'false', version: '1' });
   ok(release(f, 'dev', 1));
   assert.equal(git(f.repo, 'rev-parse', 'HEAD'), initial);
-  assert.equal(git(f.remote, 'show', 'dev-1.0.1:dev/config.json'), JSON.stringify({ version: 1, ...source }));
+  assert.deepEqual(inner(git(f.remote, 'show', 'dev-1.0.1:dev/config.json')), { version: 1, ...source });
   assert.equal(readFileSync(join(f.repo, 'config.json'), 'utf8'), originalProd);
   assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /@dev-1\.0\.1\/dev\/config\.json/);
 
@@ -172,7 +182,7 @@ test('dev bootstrap, updates, retries and prod updates publish independently to 
   ok(release(f, 'dev', 2));
   assert.equal(git(f.repo, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), 'dev/config.json');
   assert.equal(readFileSync(join(f.repo, 'config.json'), 'utf8'), originalProd);
-  assert.equal(JSON.parse(git(f.remote, 'show', 'dev-1.0.2:dev/config.json')).version, 2);
+  assert.equal(inner(git(f.remote, 'show', 'dev-1.0.2:dev/config.json')).version, 2);
   assert.equal(git(f.remote, 'tag', '--list', '1.0.*'), '1.0.8');
   const afterDev = git(f.repo, 'rev-parse', 'HEAD');
   assert.deepEqual(build(f, 'dev'), { changed: 'false', version: '2' });
@@ -186,7 +196,7 @@ test('dev bootstrap, updates, retries and prod updates publish independently to 
   ok(release(f, 'prod', 9));
   assert.equal(git(f.repo, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), 'config.json');
   assert.equal(readFileSync(join(f.repo, 'dev/config.json'), 'utf8'), devConfig);
-  assert.equal(JSON.parse(git(f.remote, 'show', '1.0.9:config.json')).version, 9);
+  assert.equal(inner(git(f.remote, 'show', '1.0.9:config.json')).version, 9);
   const afterProd = git(f.repo, 'rev-parse', 'HEAD');
   assert.deepEqual(build(f, 'prod'), { changed: 'false', version: '9' });
   ok(release(f, 'prod', 9));
@@ -221,7 +231,7 @@ test('new dev config starts at version 1 and validates input even without host p
   writeJson(join(f.repo, 'dev/hosts.json'), { ...source, api: ['http://invalid.example.test'] });
   const result = run(f.repo, process.execPath, [
     join(root, 'scripts/build.mjs'), '--hosts', 'dev/hosts.json', '--out', 'dev/config.json',
-  ]);
+  ], { SIGN_KEY, CIPHER_KEY });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /только https/);
 });

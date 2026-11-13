@@ -4,8 +4,7 @@
 // падать из-за того, что сломался какой-то другой, давно опубликованный хост.
 // Доступность из РФ так не проверить — только опечатки, мёртвые домены и битые сертификаты.
 //   node scripts/check-hosts.mjs hosts.json [config.json]
-import { existsSync } from 'node:fs';
-import { ROLES, readJson, validateSource } from './lib.mjs';
+import { ROLES, readInnerConfig, readJson, validateSource } from './lib.mjs';
 
 const [hostsPath = 'hosts.json', publishedPath] = process.argv.slice(2);
 let hosts;
@@ -17,8 +16,9 @@ try {
 }
 
 const published = new Set();
-if (publishedPath && existsSync(publishedPath)) {
-  const config = readJson(publishedPath);
+// SAM-809: опубликованный config.json — конверт; достаём внутренний конфиг.
+const config = publishedPath ? readInnerConfig(publishedPath) : null;
+if (config) {
   for (const role of ROLES) for (const origin of config[role] ?? []) published.add(origin);
 }
 

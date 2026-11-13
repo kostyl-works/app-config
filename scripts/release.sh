@@ -12,13 +12,19 @@ case "$ENVIRONMENT" in
   *) echo "::error::Неизвестное окружение: ${ENVIRONMENT}"; exit 1 ;;
 esac
 
-# Тег должен соответствовать версии внутри JSON.
+# Тег должен соответствовать версии ВНУТРИ конверта (SAM-809: config.json — {p,s}).
+# Самодостаточно (только node:fs): release.sh запускают из корня репо, где scripts/ может
+# быть недоступен для импорта при прогоне в изолированном окружении.
 node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const [path, version] = process.argv.slice(1);
-  const config = JSON.parse(readFileSync(path, "utf8"));
-  if (!Number.isSafeInteger(config.version) || config.version < 1 || String(config.version) !== version) {
-    console.error(`::error::VERSION ${version} не совпадает с положительной целой version в ${path}`);
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  const config =
+    parsed && typeof parsed.p === "string" && typeof parsed.s === "string"
+      ? JSON.parse(Buffer.from(parsed.p, "base64url").toString("utf8"))
+      : parsed;
+  if (!config || !Number.isSafeInteger(config.version) || config.version < 1 || String(config.version) !== version) {
+    console.error(`::error::VERSION ${version} не совпадает с version внутри конверта ${path}`);
     process.exit(1);
   }
 ' "$CONFIG_PATH" "$VERSION"

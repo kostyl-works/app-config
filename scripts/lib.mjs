@@ -1,5 +1,5 @@
 // Общие правила формата конфига хостов. Без внешних зависимостей.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 /** Роли в порядке вывода. Новая роль = релиз приложения, которое её понимает. */
 export const ROLES = ['api', 'superapi', 'web', 'oauth', 'cdn', 'analytics'];
@@ -86,4 +86,26 @@ export function readJson(path) {
   } catch (error) {
     throw new Error(`${path} не читается как JSON — проверьте запятые и кавычки (${error.message})`);
   }
+}
+
+/**
+ * SAM-809: опубликованный config.json — подписанный конверт {"p": base64url(bytes конфига),
+ * "s": base64url(подпись)}. Возвращает САМ конфиг (внутренние байты из `p`) как объект.
+ * Legacy-плейнтекст (ещё без конверта) возвращается как есть. `null` — пусто/не объект.
+ */
+export function unwrapEnvelope(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (typeof parsed.p === 'string' && typeof parsed.s === 'string') {
+    try {
+      return JSON.parse(Buffer.from(parsed.p, 'base64url').toString('utf8'));
+    } catch (error) {
+      throw new Error(`config.json: поле "p" конверта не разбирается как JSON (${error.message})`);
+    }
+  }
+  return parsed; // legacy-плейнтекст
+}
+
+/** Прочитать опубликованный конфиг (конверт или legacy) как внутренний объект, либо null. */
+export function readInnerConfig(path) {
+  return existsSync(path) ? unwrapEnvelope(readJson(path)) : null;
 }
