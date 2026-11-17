@@ -77,16 +77,18 @@ if [ "$PUBLISHED" = true ]; then
 fi
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  # Окружений в Varioqub нет: prod-релиз приложения читает флаг endpoint_document, остальные сборки — endpoint_document_dev.
+  if [ "$ENVIRONMENT" = prod ]; then VARIOQUB_FLAG=endpoint_document; else VARIOQUB_FLAG=endpoint_document_dev; fi
   {
     echo "### ${ENVIRONMENT}: version ${VERSION} (${TAG})"
     echo
     echo "- jsDelivr: https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@${TAG}/${CONFIG_PATH}"
     echo "- raw (main): https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/${CONFIG_PATH}"
     echo
-    echo "**Шаг 2 — Varioqub (${ENVIRONMENT}).** Вставьте строку ниже целиком в флаг \`endpoints_config\` соответствующего окружения:"
+    echo "**Шаг 2 — Varioqub (${ENVIRONMENT}).** Вставьте строку ниже целиком в строковый флаг \`${VARIOQUB_FLAG}\` (окружений в Varioqub нет — dev и prod различаются именем флага). Это компактная форма того же документа — подписанный {p,s} не влезает в лимит флага 500 символов:"
     echo
-    echo '```json'
-    cat "$CONFIG_PATH"
+    echo '```'
+    node "$(dirname "$0")/varioqub-string.mjs" "$CONFIG_PATH"
     echo '```'
   } >> "${GITHUB_STEP_SUMMARY}"
 fi

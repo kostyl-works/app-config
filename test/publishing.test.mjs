@@ -179,6 +179,9 @@ test('dev bootstrap, updates, retries and prod updates publish independently to 
   assert.deepEqual(inner(git(f.remote, 'show', 'dev-1.0.1:dev/config.json')), { version: 1, ...source });
   assert.equal(readFileSync(join(f.repo, 'config.json'), 'utf8'), originalProd);
   assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /@dev-1\.0\.1\/dev\/config\.json/);
+  // Varioqub: имя флага dev и компактная форма (подписанный {p,s} не влез бы в лимит флага).
+  assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /`endpoint_document_dev`/);
+  assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /\n[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{86}\n/);
 
   commit(f.repo, 'dev/hosts.json', { ...source, api: ['https://dev-api.example.test'] });
   git(f.repo, 'push', '-q', 'origin', 'main');

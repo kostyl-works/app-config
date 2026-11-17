@@ -5,7 +5,9 @@
 //   как его кладут crypto/keys-dev.sh / keys-prod.sh: последние 32 байта PKCS8 DER).
 // - Поточный шифр: keystream = HMAC-SHA256(key, salt || uint32be(index)) по 32 байта, XOR.
 // - Конверт {"p": base64url(bytes конфига), "s": base64url(подпись)}.
+// - Компактная форма для Varioqub "<z>.<s>" (сжатие со словарём) — внизу файла.
 import { createHmac, createPrivateKey, createPublicKey, sign as edSign, verify as edVerify } from 'node:crypto';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 const BLOCK = 32;
 // Префикс PKCS8 DER для Ed25519-приватника (16 байт) + 32 байта seed = валидный ключ для Node.
@@ -116,4 +118,59 @@ export const RUTUBE_END = ')~';
 export function rutubeDescription(envelopeString, cipherKey, videoId) {
   const cipher = streamCipher(cipherKey, Buffer.from(videoId, 'utf8'), Buffer.from(envelopeString, 'utf8'));
   return `${RUTUBE_BEGIN}${toB64url(cipher)}${RUTUBE_END}`;
+}
+
+// --- Компактная форма конверта — для Varioqub (строковый флаг не длиннее 500 символов) ---
+// "<z>.<s>": z = base64url(zlib RFC 1950 (байты конфига) со словарём COMPACT_DICTIONARY_V1),
+// s — ТА ЖЕ подпись над НЕсжатыми байтами, что в {p,s}. Точки нет в алфавите base64url, поэтому
+// разбор однозначен. Подписанный {p,s} — ~570 символов, компактный — ~180. Формат zlib, а не raw
+// deflate: заголовок несёт отпечаток словаря (FDICT), без него dart:io словарь не подставляет.
+// Словарь ЗАМОРОЖЕН: выпущенные сборки распаковывают только им. Другой словарь — другой формат
+// (три части с меткой формата впереди); эту форму не менять. Совпадение со словарём приложения
+// (DocumentCodec.compactDictionaryV1) проверяет SHA-256 в golden-тестах обеих сторон.
+export const COMPACT_DICTIONARY_V1 =
+  '","https://' +
+  'https://audio.litnet.com https://api-audio.litnet.com https://superapi.litnet.com https://id.litnet.com ' +
+  'https://storytest.ru https://dev-api.storytest.ru "endpoints_enabled":false ' +
+  '{"version":1,"endpoints_enabled":true,"api":["https://api-litnet.storytest.ru"],' +
+  '"superapi":["https://superapi-litnet.storytest.ru"],"web":["https://litnet.storytest.ru"],' +
+  '"oauth":["https://id-litnet.storytest.ru"],"cdn":["https://publiccdn.litnet.com"],' +
+  '"analytics":["https://osc.litnet.com"],"etag":"';
+
+/** Потолок распаковки компактной формы, байт (защита от «zip-бомбы»; конфиг — сотни байт). */
+export const COMPACT_MAX_BYTES = 8192;
+
+const compactDictionary = () => Buffer.from(COMPACT_DICTIONARY_V1, 'utf8');
+
+/** Конверт {p,s} (строка) → компактная форма "<z>.<s>" для Varioqub. */
+export function compactEnvelope(envelopeText) {
+  const envelope = JSON.parse(envelopeText);
+  if (typeof envelope?.p !== 'string' || typeof envelope?.s !== 'string') throw new Error('это не конверт {p,s}');
+  const z = deflateSync(fromB64url(envelope.p), { level: 9, memLevel: 9, dictionary: compactDictionary() });
+  return `${toB64url(z)}.${envelope.s}`;
+}
+
+/**
+ * Любая форма конверта ({p,s} или "<z>.<s>") → {payload, signature}; null — не конверт, битый
+ * base64, не распаковалось или распаковка больше COMPACT_MAX_BYTES.
+ */
+export function unwrapAny(text) {
+  const raw = String(text ?? '').trim();
+  if (raw.startsWith('{')) {
+    try {
+      const envelope = JSON.parse(raw);
+      if (typeof envelope?.p !== 'string' || typeof envelope?.s !== 'string') return null;
+      return { payload: fromB64url(envelope.p), signature: fromB64url(envelope.s) };
+    } catch {
+      return null;
+    }
+  }
+  const parts = raw.split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{86}$/.test(parts[1])) return null;
+  try {
+    const payload = inflateSync(fromB64url(parts[0]), { dictionary: compactDictionary(), maxOutputLength: COMPACT_MAX_BYTES });
+    return payload.length ? { payload, signature: fromB64url(parts[1]) } : null;
+  } catch {
+    return null;
+  }
 }

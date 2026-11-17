@@ -6,13 +6,19 @@
 import assert from 'node:assert/strict';
 import { createPrivateKey, createPublicKey } from 'node:crypto';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import {
+  COMPACT_DICTIONARY_V1,
   ETAG_SALT,
+  compactEnvelope,
   encodeVideoList,
   rutubeDescription,
   signEnvelope,
   streamCipher,
   toB64url,
+  unwrapAny,
+  verifyEd25519,
 } from './crypto.mjs';
 
 const seed = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
@@ -35,6 +41,16 @@ const GOLDEN = {
     'uiqf1vo_WKKSsB6nqxFCvUms_WANepO9iXH34X_6b545fZ1_4ckPZwrMks8A_JmmAJrovUoYmin60SWQWZ8HMax5' +
     'Tb7kjrzoVQyFToTnTnl4bdPDVuzvRCHKeWxcOQcZxuaWM)~',
   etag: 'mh15829q4yQLV2OBC4X6fugOR_X50Xf_dnzjvCjmymHJumkXPB8V7Trmx28n3aAzgQPcMqN_Hy2kQWNOadbnwzTxdUri-Kk',
+  // Компактная форма для Varioqub: словарь (по SHA-256) и строки, которые обязана открыть Dart-сторона.
+  compactDictionarySha256: 'f76afd71e57454c704bf968b8b13be5d5d60411af1417ec05516eb6838805043',
+  compact:
+    'ePlcIbASQwoqE4wQKUaNOaXYWgB9ThA0.8XOuxRXXLlDT3Aj4fgYjBAoXudegKx8ibwm_fbIma96I_q8nnezFg88ms1anozeOOil__1ffY-WX_Gjg5kTbDw',
+  realisticMessage:
+    '{"version":7,"endpoints_enabled":true,"api":["https://api-litnet.storytest.ru","https://api.mirror-lt.net"],' +
+    '"cdn":["https://publiccdn.litnet.com"]}',
+  realisticCompact:
+    'ePlcIbASQwoqc8qDSgdZhV5uZlFRfpFuTokeUCHRPqgFAB4ENEc.' +
+    'B-PhJQsPE60RPEzc3CDBoEUOd3v5TkZ3wa4UNDqcg7jvFBnOymdtAzA2_1iQ_43FzIci5ZT_DIJifVkd9wnHDQ',
 };
 
 test('публичный ключ из seed совпадает', () => {
@@ -62,4 +78,42 @@ test('описание Rutube совпадает', () => {
 
 test('etag совпадает', () => {
   assert.equal(encodeVideoList(videoList, cipherKey, ETAG_SALT), GOLDEN.etag);
+});
+
+test('словарь компактной формы заморожен (SHA-256 тот же, что у приложения)', () => {
+  assert.equal(createHash('sha256').update(COMPACT_DICTIONARY_V1, 'utf8').digest('hex'), GOLDEN.compactDictionarySha256);
+});
+
+test('компактная форма: golden-строки открываются в исходный конфиг с той же подписью', () => {
+  const simple = unwrapAny(GOLDEN.compact);
+  assert.equal(simple.payload.toString('utf8'), message);
+  assert.equal(toB64url(simple.signature), GOLDEN.signature);
+  const realistic = unwrapAny(GOLDEN.realisticCompact);
+  assert.equal(realistic.payload.toString('utf8'), GOLDEN.realisticMessage);
+  assert.ok(verifyEd25519(GOLDEN.publicKey, realistic.payload, realistic.signature));
+});
+
+test('компактная форма: туда и обратно из конверта, обе формы читаются одинаково', () => {
+  const envelope = signEnvelope(Buffer.from(GOLDEN.realisticMessage, 'utf8'), seed);
+  const compact = compactEnvelope(envelope);
+  assert.match(compact, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{86}$/);
+  assert.ok(compact.length < envelope.length / 2, `${compact.length} против ${envelope.length}`);
+  assert.deepEqual(unwrapAny(compact), unwrapAny(envelope));
+});
+
+test('компактная форма: мусор и «zip-бомба» — null', () => {
+  for (const bad of ['', 'abc', 'a.b', `a.${'A'.repeat(85)}`, `a.b.${'A'.repeat(86)}`, `!!.${'A'.repeat(86)}`, `AAAA.${'A'.repeat(86)}`]) {
+    assert.equal(unwrapAny(bad), null, bad);
+  }
+  const bomb = deflateSync(Buffer.alloc(100_000, 0x20), { dictionary: Buffer.from(COMPACT_DICTIONARY_V1, 'utf8') });
+  assert.equal(unwrapAny(`${toB64url(bomb)}.${'A'.repeat(86)}`), null);
+});
+
+test('боевые документы влезают в строковый флаг Varioqub (500 символов) с запасом', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const path of ['config.json', 'dev/config.json']) {
+    const text = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').trim();
+    if (!text.startsWith('{"p"')) continue;
+    assert.ok(compactEnvelope(text).length <= 300, `${path}: ${compactEnvelope(text).length} символов`);
+  }
 });
