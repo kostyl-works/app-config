@@ -120,13 +120,14 @@ function select(f, name, event, ref = 'refs/heads/main') {
 }
 
 /** Запуск build.mjs как есть: результат процесса и выходы GITHUB_OUTPUT. */
-function buildRaw(f, environment, signKey = SIGN_KEY) {
+function buildRaw(f, environment, signKey = SIGN_KEY, { cipherKey = CIPHER_KEY, rutube = false } = {}) {
   const prefix = environment === 'dev' ? 'dev/' : '';
   const outputPath = join(f.dir, 'build-output.txt');
   writeFileSync(outputPath, '');
   const result = run(f.repo, process.execPath, [
     join(root, 'scripts/build.mjs'), '--hosts', `${prefix}hosts.json`, '--out', `${prefix}config.json`,
-  ], { GITHUB_OUTPUT: outputPath, SIGN_KEY: signKey, CIPHER_KEY });
+    ...(rutube ? ['--rutube', `${prefix}rutube.json`] : []),
+  ], { GITHUB_OUTPUT: outputPath, SIGN_KEY: signKey, CIPHER_KEY: cipherKey });
   const outputs = readFileSync(outputPath, 'utf8').trim();
   return { result, outputs: outputs ? Object.fromEntries(outputs.split('\n').map((line) => line.split('='))) : {} };
 }
@@ -285,4 +286,28 @@ test('key rotation re-signs the same content with version + 1', (t) => {
   const envelope = JSON.parse(readFileSync(join(f.repo, 'dev/config.json'), 'utf8'));
   assert.ok(verifyEd25519(PUB_2, fromB64url(envelope.p), fromB64url(envelope.s)));
   assert.deepEqual(inner(JSON.stringify(envelope)), { version: 2, ...source });
+});
+
+test('new cipher key with the same video list: reason says so, version + 1', (t) => {
+  const f = fixture(t);
+  const videos = { videos: [{ id: 'b'.repeat(32), token: 'dev' }] };
+  commit(f.repo, 'dev/rutube.json', videos);
+  git(f.repo, 'push', '-q', 'origin', 'main');
+  const first = buildRaw(f, 'dev', SIGN_KEY, { rutube: true });
+  ok(first.result);
+  ok(release(f, 'dev', 1));
+  // Выпуск ключей с нуля: новый ключ шифрования (и подписи) — шифротекст etag другой, список тот же.
+  const CIPHER_KEY_2 = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 5 + 11) & 0xff)).toString('base64url');
+  commit(f.repo, 'keys.json', keysJson([PUB_2]));
+  git(f.repo, 'push', '-q', 'origin', 'main');
+  const resigned = buildRaw(f, 'dev', SIGN_KEY_2, { cipherKey: CIPHER_KEY_2, rutube: true });
+  ok(resigned.result);
+  assert.deepEqual(resigned.outputs, { changed: 'true', version: '2' });
+  assert.match(resigned.result.stdout, /Причина: сменился ключ шифрования — хосты и список видео те же, перешифровываю etag и переподписываю новым ключом/);
+  // А если список видео правда изменился — так и пишем.
+  ok(release(f, 'dev', 2));
+  commit(f.repo, 'dev/rutube.json', { videos: [...videos.videos, { id: 'c'.repeat(32), token: 'dev' }] });
+  const changed = buildRaw(f, 'dev', SIGN_KEY_2, { cipherKey: CIPHER_KEY_2, rutube: true });
+  ok(changed.result);
+  assert.match(changed.result.stdout, /Причина: изменились хосты или список видео/);
 });

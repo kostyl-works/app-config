@@ -102,7 +102,7 @@ async function refresh(label, refreshToken) {
   return { access: body.access_token, refresh: body.refresh_token };
 }
 
-/** PATCH описания видео. Возвращает true, если описание реально содержит наш конверт. */
+/** PATCH описания видео. Сбой — fail. Подтверждение чтением — в rutube-flow.mjs (с повторами). */
 async function patch(videoId, access) {
   const description = rutubeDescription(envelope, cipherKey, videoId);
   let response;
@@ -122,8 +122,6 @@ async function patch(videoId, access) {
         `аккаунту метки и id верный (32 hex). Ответ: ${text.slice(0, 200)}`,
     );
   }
-  // Контроль: читаем описание анонимно и проверяем, что наш конверт расшифровывается.
-  return verify(videoId);
 }
 
 /** Анонимно читает описание видео: лежит ли в нём текущий конверт. Сбой чтения — «не актуально». */
@@ -182,6 +180,7 @@ const { written, current } = await publishDescriptions({
   refresh,
   writeBack: writeBackSecret,
   patch,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   log: (line) => console.log(line),
   fail,
   secret: SECRET,

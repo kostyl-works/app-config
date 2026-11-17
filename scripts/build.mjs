@@ -166,11 +166,25 @@ if (sameContent && sameEtag && signedByCurrentKey) {
   output('version', current.version);
   process.exit(0);
 }
+// etag — шифротекст списка видео: новый ключ шифрования меняет его и при том же списке. Чтобы
+// причина не врала «изменился список», сверяем сам список с rutube.json опубликованного тега.
+let publishedVideoIds = null;
+if (published && args.rutube) {
+  try {
+    const text = execFileSync('git', ['show', `${published.tag}:${args.rutube}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    publishedVideoIds = (JSON.parse(text).videos ?? []).map((v) => v.id);
+  } catch {
+    publishedVideoIds = null; // в теге нет списка — считаем, что список изменился
+  }
+}
+const sameVideoList = publishedVideoIds !== null && JSON.stringify(publishedVideoIds) === JSON.stringify(videoIds);
 const reason = !published
   ? 'первая публикация'
   : sameContent && sameEtag
     ? 'ключ подписи сменился — переподписываю тем же содержимым'
-    : 'изменились хосты или список видео';
+    : sameContent && sameVideoList
+      ? `сменился ключ шифрования — хосты и список видео те же, перешифровываю etag${signedByCurrentKey ? '' : ' и переподписываю новым ключом'}`
+      : 'изменились хосты или список видео';
 console.log(`Причина: ${reason}.`);
 
 const inner = { version: (published?.version ?? 0) + 1, ...desired };
