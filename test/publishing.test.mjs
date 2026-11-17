@@ -138,9 +138,11 @@ function build(f, environment, signKey = SIGN_KEY) {
   return outputs;
 }
 
-function release(f, environment, version) {
+/** Публикация release.sh. Сверка узлов jsDelivr по умолчанию выключена (PURGE_VERIFY_ROUNDS=0) — её тесты ниже. */
+function release(f, environment, version, extra = {}) {
   return run(f.repo, 'bash', [join(root, 'scripts/release.sh')], {
     ...f.env, ENVIRONMENT: environment, VERSION: String(version), PURGE_RETRY_DELAY: '0',
+    PURGE_FIRST_DELAY: '0', PURGE_VERIFY_ROUNDS: '0', ...extra,
   });
 }
 
@@ -313,4 +315,63 @@ test('new cipher key with the same video list: reason says so, version + 1', (t)
   const changed = buildRaw(f, 'dev', SIGN_KEY_2, { cipherKey: CIPHER_KEY_2, rutube: true });
   ok(changed.result);
   assert.match(changed.result.stdout, /Причина: изменились хосты или список видео/);
+});
+
+/**
+ * Фальшивый curl для сверки узлов jsDelivr: сброс — в журнал; запрос к узлу — опубликованный
+ * dev/config.json, а узел STALE_HOST первые STALE_TIMES раз отдаёт прежний документ.
+ */
+function fakeJsDelivr(f, { staleHost = '', staleTimes = 0 } = {}) {
+  writeFileSync(
+    join(f.dir, 'bin/curl'),
+    [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "$PURGE_LOG"',
+      'case "$*" in *purge.jsdelivr.net*) exit 0 ;; esac',
+      'host=$(printf "%s" "$*" | sed -E \'s#.*https://([a-z]+)\\.jsdelivr\\.net/.*#\\1#\')',
+      'if [ "$host" = "$STALE_HOST" ]; then',
+      '  n=$(cat "$STALE_COUNTER" 2>/dev/null || echo 0)',
+      '  echo $((n + 1)) > "$STALE_COUNTER"',
+      '  if [ "$n" -lt "$STALE_TIMES" ]; then echo \'{"p":"old","s":"old"}\'; exit 0; fi',
+      'fi',
+      'cat "$FRESH_FILE"',
+      '',
+    ].join('\n'),
+  );
+  return {
+    PURGE_VERIFY_ROUNDS: '3', PURGE_VERIFY_DELAY: '0',
+    FRESH_FILE: join(f.repo, 'dev/config.json'),
+    STALE_HOST: staleHost, STALE_TIMES: String(staleTimes), STALE_COUNTER: join(f.dir, 'stale-count'),
+  };
+}
+
+const purgeCount = (f) => readFileSync(f.env.PURGE_LOG, 'utf8').split('\n').filter((line) => line.includes('purge.jsdelivr.net')).length;
+
+test('jsDelivr: all nodes serve the new document right after purge — one purge', (t) => {
+  const f = fixture(t);
+  build(f, 'dev');
+  const result = release(f, 'dev', 1, fakeJsDelivr(f));
+  ok(result);
+  assert.match(result.stdout, /все узлы отдают новый документ/);
+  assert.equal(purgeCount(f), 1);
+});
+
+test('jsDelivr: a node lags one round (push → purge race) — purged again, then fresh', (t) => {
+  const f = fixture(t);
+  build(f, 'dev');
+  const result = release(f, 'dev', 1, fakeJsDelivr(f, { staleHost: 'testingcf', staleTimes: 1 }));
+  ok(result);
+  assert.match(result.stdout, /ещё прежний документ на узлах: testingcf/);
+  assert.match(result.stdout, /все узлы отдают новый документ/);
+  assert.equal(purgeCount(f), 2);
+});
+
+test('jsDelivr: a node never catches up — warning, release still succeeds', (t) => {
+  const f = fixture(t);
+  build(f, 'dev');
+  const result = release(f, 'dev', 1, fakeJsDelivr(f, { staleHost: 'testingcf', staleTimes: 999 }));
+  ok(result);
+  assert.match(result.stdout, /::warning::jsDelivr: через 0 с узлы testingcf всё ещё отдают прежний документ/);
+  assert.equal(purgeCount(f), 1 + 3, 'первый сброс + по одному на каждый раунд сверки');
+  assert.equal(inner(git(f.remote, 'show', 'dev-1.0.1:dev/config.json')).version, 1);
 });

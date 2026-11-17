@@ -69,11 +69,52 @@ purge() {
   return 0
 }
 
+# Путь документа в jsDelivr — тот же, что читает приложение.
+case "$ENVIRONMENT" in
+  prod) JSD_PATH="gh/${GITHUB_REPOSITORY}@1/config.json" ;;
+  dev) JSD_PATH="gh/${GITHUB_REPOSITORY}@main/dev/config.json" ;;
+esac
+
+# Узлы jsDelivr, которые отдают НЕ опубликованный документ (через пробел; пусто — все свежие).
+# Каждый провайдер jsDelivr — свой адрес; ответ сравнивается с config.json байт в байт.
+stale_nodes() {
+  local host body stale=""
+  for host in ${JSD_HOSTS:-cdn fastly gcore testingcf}; do
+    body="$(curl -fsS --max-time 15 "https://${host}.jsdelivr.net/${JSD_PATH}" 2>/dev/null || true)"
+    [ "$body" = "$EXPECTED" ] || stale="${stale} ${host}"
+  done
+  echo "${stale# }"
+}
+
+# Гонка «пуш → сброс» (SAM-809, прогон 44031738153): сразу после пуша jsDelivr может ещё видеть
+# @main / @1 на прошлом коммите, и сброс в этот момент закэширует СТАРЫЙ документ заново —
+# у ветки до 12 ч (узел testingcf отдавал v3 после публикации v4). Поэтому: пауза перед сбросом,
+# потом сверка всех узлов и повторный сброс отставших. Не догнало — предупреждение, не ошибка:
+# публикация уже состоялась, а старый документ приложение просто не применит как более старый.
 if [ "$PUBLISHED" = true ]; then
-  case "$ENVIRONMENT" in
-    prod) purge "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@1/config.json" ;;
-    dev) purge "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/dev/config.json" ;;
-  esac
+  EXPECTED="$(cat "$CONFIG_PATH")"
+  sleep "${PURGE_FIRST_DELAY:-10}"
+  purge "https://purge.jsdelivr.net/${JSD_PATH}"
+  rounds="${PURGE_VERIFY_ROUNDS:-6}"
+  delay="${PURGE_VERIFY_DELAY:-20}"
+  waited=0
+  stale=""
+  round=1
+  while [ "$round" -le "$rounds" ]; do
+    sleep "$delay"
+    waited=$((waited + delay))
+    stale="$(stale_nodes)"
+    if [ -z "$stale" ]; then
+      echo "jsDelivr: все узлы отдают новый документ (через ${waited} с после сброса)."
+      break
+    fi
+    echo "jsDelivr: через ${waited} с ещё прежний документ на узлах: ${stale} — сбрасываю кэш ещё раз (${round} из ${rounds})."
+    purge "https://purge.jsdelivr.net/${JSD_PATH}"
+    round=$((round + 1))
+  done
+  if [ -n "$stale" ]; then
+    echo "::warning::jsDelivr: через ${waited} с узлы ${stale} всё ещё отдают прежний документ. Публикация состоялась; отставшие узлы догонят сами (кэш ветки — до 12 ч), приложение прежний документ не применит. Сверить позже: скрипт ключей → «Статус» → проверка каналов."
+  fi
 fi
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
