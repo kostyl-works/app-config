@@ -13,9 +13,9 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { RUTUBE_BEGIN, RUTUBE_END, rutubeDescription, streamCipher } from './crypto.mjs';
+import { RUTUBE_BEGIN, RUTUBE_END, rutubeDescription, streamCipher, unwrapAny } from './crypto.mjs';
 import { readJson, rutubeTokenSource } from './lib.mjs';
-import { publishDescriptions } from './rutube-flow.mjs';
+import { DESCRIPTION, publishDescriptions } from './rutube-flow.mjs';
 
 const MANUAL = 'docs/features/dynamic-base-url/rutube/05_refresh_token_manual.md (в репозитории приложения)';
 const TOKEN_ENDPOINT = 'https://rutube.ru/multipass/api/v3/accounts/token/';
@@ -124,22 +124,27 @@ async function patch(videoId, access) {
   }
 }
 
-/** Анонимно читает описание видео: лежит ли в нём текущий конверт. Сбой чтения — «не актуально». */
+/**
+ * Анонимно (как приложение) читает описание видео и возвращает его состояние (DESCRIPTION в
+ * rutube-flow.mjs): current — текущий конверт; stale — другой, прежний конверт; missing — меток нет;
+ * broken — между метками не конверт (искажено или зашифровано другим ключом); unreadable — не прочиталось.
+ */
 async function verify(videoId) {
   let desc;
   try {
     const r = await fetch(`https://rutube.ru/api/video/${videoId}/`, { headers: { accept: 'application/json' } });
-    if (!r.ok) return false;
+    if (!r.ok) return DESCRIPTION.unreadable;
     desc = (await r.json()).description ?? '';
   } catch {
-    return false;
+    return DESCRIPTION.unreadable;
   }
   const i = desc.indexOf(RUTUBE_BEGIN);
   const j = desc.indexOf(RUTUBE_END, i + RUTUBE_BEGIN.length);
-  if (i < 0 || j < 0) return false;
+  if (i < 0 || j < 0) return DESCRIPTION.missing;
   const cipher = Buffer.from(desc.slice(i + RUTUBE_BEGIN.length, j).replace(/\s/g, ''), 'base64url');
   const plain = streamCipher(cipherKey, Buffer.from(videoId, 'utf8'), cipher).toString('utf8');
-  return plain === envelope;
+  if (plain === envelope) return DESCRIPTION.current;
+  return unwrapAny(plain) ? DESCRIPTION.stale : DESCRIPTION.broken;
 }
 
 /** Пишет обновлённый секрет RUTUBE_TOKENS через PAT. */
@@ -173,7 +178,7 @@ function writeBackSecret(updated) {
 
 // --- прогон ---
 // Порядок (сверка → обмен → СРАЗУ запись токена → описания) — в rutube-flow.mjs, под тестом.
-const { written, current } = await publishDescriptions({
+const { written, current, unconfirmed } = await publishDescriptions({
   videos,
   tokens,
   verify,
@@ -182,8 +187,12 @@ const { written, current } = await publishDescriptions({
   patch,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   log: (line) => console.log(line),
+  warn: (message) => console.log(`::warning::${message}`),
   fail,
   secret: SECRET,
   manual: MANUAL,
 });
-console.log(`Готово: записано описаний — ${written}, уже актуальных — ${current}.`);
+console.log(
+  `Готово: записано описаний — ${written} (из них ещё не доехало до анонимного чтения — ${unconfirmed}), ` +
+    `уже актуальных — ${current}.`,
+);
