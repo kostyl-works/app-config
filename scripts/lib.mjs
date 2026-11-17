@@ -110,6 +110,11 @@ export function readInnerConfig(path) {
   return existsSync(path) ? unwrapEnvelope(readJson(path)) : null;
 }
 
+/** Похоже ли разобранное значение на конверт подписи {p, s}. */
+export function isEnvelope(parsed) {
+  return Boolean(parsed) && typeof parsed.p === 'string' && typeof parsed.s === 'string';
+}
+
 /**
  * Секрет refresh-токенов Rutube — свой у каждого окружения, как ключи подписи. Общий словарь
  * нельзя: секрет GitHub не читается, слить в него новую метку нельзя, а запись обратно целиком
@@ -128,4 +133,54 @@ export function rutubeTokenSource(environment, env) {
     };
   }
   throw new Error(`неизвестное окружение "${environment}" (ожидается prod или dev)`);
+}
+
+/** Окружения публикации и их файлы. */
+export const ENVIRONMENTS = {
+  prod: { config: 'config.json', tagPrefix: '1.0.' },
+  dev: { config: 'dev/config.json', tagPrefix: 'dev-1.0.' },
+};
+
+/** Окружение по пути config.json (prod — `config.json`, dev — `dev/config.json`), иначе null. */
+export function environmentOfConfig(path) {
+  for (const [name, env] of Object.entries(ENVIRONMENTS)) if (env.config === path) return name;
+  return null;
+}
+
+/** Тег публикации окружения для версии: prod `1.0.N`, dev `dev-1.0.N`. */
+export function tagFor(environment, version) {
+  return `${ENVIRONMENTS[environment].tagPrefix}${version}`;
+}
+
+/**
+ * SAM-809: последний тег публикации окружения среди `tags` → {tag, version} или null. Теги ставит
+ * только CI (правило репозитория), поэтому именно они — источник правды о версии, а не
+ * config.json в ветке, который может поправить любой с правом push.
+ */
+export function latestTag(environment, tags) {
+  const prefix = ENVIRONMENTS[environment].tagPrefix;
+  let best = null;
+  for (const tag of tags) {
+    if (!tag.startsWith(prefix)) continue;
+    const rest = tag.slice(prefix.length);
+    if (!/^[1-9][0-9]*$/.test(rest)) continue;
+    const version = Number(rest);
+    if (!Number.isSafeInteger(version)) continue;
+    if (!best || version > best.version) best = { tag, version };
+  }
+  return best;
+}
+
+/**
+ * SAM-809: белый список ключей подписи — открытые ключи, которые знает ВЫПУЩЕННАЯ сборка
+ * приложения (`keys.json` → окружение → `released`). Подпись ключом не из списка приложение
+ * отвергнет, поэтому CI такой ключ не берёт. Ведут списки crypto/keys-dev.sh и crypto/keys-prod.sh (репозиторий приложения).
+ * @returns {string[]} открытые ключи base64url
+ */
+export function releasedKeys(keys, environment) {
+  const list = keys?.[environment]?.released;
+  if (!Array.isArray(list) || list.length === 0 || !list.every((k) => typeof k === 'string' && k.length === 43)) {
+    throw new Error(`нет списка "${environment}.released" (открытые ключи base64url по 43 символа)`);
+  }
+  return list;
 }

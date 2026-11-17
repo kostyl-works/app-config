@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { RUTUBE_BEGIN, RUTUBE_END, rutubeDescription, streamCipher } from './crypto.mjs';
 import { readJson, rutubeTokenSource } from './lib.mjs';
+import { publishDescriptions } from './rutube-flow.mjs';
 
 const MANUAL = 'docs/features/dynamic-base-url/rutube/05_refresh_token_manual.md (в репозитории приложения)';
 const TOKEN_ENDPOINT = 'https://rutube.ru/multipass/api/v3/accounts/token/';
@@ -125,9 +126,16 @@ async function patch(videoId, access) {
   return verify(videoId);
 }
 
+/** Анонимно читает описание видео: лежит ли в нём текущий конверт. Сбой чтения — «не актуально». */
 async function verify(videoId) {
-  const r = await fetch(`https://rutube.ru/api/video/${videoId}/`, { headers: { accept: 'application/json' } });
-  const desc = (await r.json()).description ?? '';
+  let desc;
+  try {
+    const r = await fetch(`https://rutube.ru/api/video/${videoId}/`, { headers: { accept: 'application/json' } });
+    if (!r.ok) return false;
+    desc = (await r.json()).description ?? '';
+  } catch {
+    return false;
+  }
   const i = desc.indexOf(RUTUBE_BEGIN);
   const j = desc.indexOf(RUTUBE_END, i + RUTUBE_BEGIN.length);
   if (i < 0 || j < 0) return false;
@@ -157,33 +165,26 @@ function writeBackSecret(updated) {
   if (result.status !== 0) {
     fail(
       `не удалось записать секрет ${SECRET} через PAT (${(result.stderr || result.stdout || '').trim()}). ` +
-        `Проверь, что GH_PAT жив и имеет право secrets:write на ${repo}.`,
+        `Обмен уже прошёл — старый refresh-токен сгорел, новый не сохранён. Что делать: проверь, что ` +
+        `GH_PAT жив и имеет право secrets:write на ${repo}, потом возьми свежий токен по мануалу ` +
+        `(${MANUAL}) и положи его в ${SECRET}.`,
     );
   }
   console.log(`Секрет ${SECRET} обновлён новыми refresh-токенами.`);
 }
 
 // --- прогон ---
-const byLabel = new Map();
-for (const v of videos) byLabel.set(v.token, [...(byLabel.get(v.token) ?? []), v.id]);
-
-const updated = { ...tokens };
-let rotated = false;
-for (const [label, ids] of byLabel) {
-  if (!tokens[label]) {
-    fail(`в секрете ${SECRET} нет метки "${label}" (нужна для видео ${ids.join(', ')}). Добавь её. Мануал: ${MANUAL}`);
-  }
-  const { access, refresh: newRefresh } = await refresh(label, tokens[label]);
-  if (newRefresh !== updated[label]) {
-    updated[label] = newRefresh;
-    rotated = true;
-  }
-  for (const id of ids) {
-    const ok = await patch(id, access);
-    console.log(`${ok ? 'OK  ' : 'БЕЗ ПОДТВЕРЖДЕНИЯ '}видео ${id} (метка "${label}")`);
-    if (!ok) fail(`видео ${id}: описание записано, но конверт из него не расшифровался обратно. Проверь CIPHER_KEY.`);
-  }
-}
-
-if (rotated) writeBackSecret(updated);
-console.log(`Готово: обновлено описаний — ${videos.length}.`);
+// Порядок (сверка → обмен → СРАЗУ запись токена → описания) — в rutube-flow.mjs, под тестом.
+const { written, current } = await publishDescriptions({
+  videos,
+  tokens,
+  verify,
+  refresh,
+  writeBack: writeBackSecret,
+  patch,
+  log: (line) => console.log(line),
+  fail,
+  secret: SECRET,
+  manual: MANUAL,
+});
+console.log(`Готово: записано описаний — ${written}, уже актуальных — ${current}.`);

@@ -6,18 +6,36 @@
 // подпись Ed25519)}. Приложение проверяет подпись ДО разбора и отвергает неподписанное
 // (fail-closed). Внутри конфига поле etag — зашифрованный список videoId (для Rutube).
 //
+// Источник правды об опубликованном — ПОСЛЕДНИЙ ТЕГ окружения (теги ставит только CI, правило
+// репозитория), а не config.json в ветке. Ключ подписи — только из белого списка keys.json
+// (ключи, которые знает выпущенная сборка). Опубликованный конверт подписан другим ключом
+// (после ротации) — переподписываем с version + 1.
+//
 //   SIGN_KEY=<base64url seed> CIPHER_KEY=<base64url> \
-//     node scripts/build.mjs --hosts hosts.json --out config.json --rutube rutube.json
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+//     node scripts/build.mjs --hosts hosts.json --out config.json --rutube rutube.json [--keys keys.json]
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { ETAG_SALT, encodeVideoList, signEnvelope } from './crypto.mjs';
-import { MAX_CONFIG_BYTES, ROLES, pickContent, readInnerConfig, readJson, validateSource } from './lib.mjs';
+import { ETAG_SALT, encodeVideoList, fromB64url, publicFromSeed, signEnvelope, verifyEd25519 } from './crypto.mjs';
+import {
+  MAX_CONFIG_BYTES,
+  ROLES,
+  environmentOfConfig,
+  isEnvelope,
+  latestTag,
+  pickContent,
+  readJson,
+  releasedKeys,
+  unwrapEnvelope,
+  validateSource,
+} from './lib.mjs';
 
 const { values: args } = parseArgs({
   options: {
     hosts: { type: 'string', default: 'hosts.json' },
     out: { type: 'string', default: 'config.json' },
     rutube: { type: 'string', default: '' },
+    keys: { type: 'string', default: 'keys.json' },
   },
 });
 
@@ -37,13 +55,13 @@ if (!signKey) {
   fail(
     'нет SIGN_KEY (приватный ключ подписи). Он приходит из секрета репозитория ' +
       'SIGN_KEY_PROD / SIGN_KEY_DEV. Если секрета нет — проинициализируй ключи: ' +
-      'в приложении запусти crypto/keys.sh → init. Мануал: docs/features/dynamic-base-url/08_key_flow.md',
+      'в приложении запусти crypto/keys-dev.sh или crypto/keys-prod.sh → «Первичная настройка». Мануал: docs/features/dynamic-base-url/08_key_flow.md',
   );
 }
 if (!cipherKey) {
   fail(
     'нет CIPHER_KEY (ключ шифрования etag). Приходит из секрета CIPHER_KEY_PROD / CIPHER_KEY_DEV. ' +
-      'Нет секрета — crypto/keys.sh → init. Мануал: docs/features/dynamic-base-url/08_key_flow.md',
+      'Нет секрета — crypto/keys-dev.sh или crypto/keys-prod.sh → «Первичная настройка». Мануал: docs/features/dynamic-base-url/08_key_flow.md',
   );
 }
 
@@ -75,23 +93,87 @@ try {
 }
 
 const configPath = args.out;
-let current;
+const environment = environmentOfConfig(configPath);
+if (!environment) fail(`${configPath}: неизвестный путь конфига (ожидается config.json или dev/config.json)`);
+
+// --- белый список ключа подписи ---
+let allowed;
 try {
-  current = readInnerConfig(configPath);
+  allowed = releasedKeys(readJson(args.keys), environment);
 } catch (error) {
-  fail(error.message);
+  fail(
+    `${args.keys}: ${error.message}. Это белый список ключей подписи, его ведёт crypto/keys-${environment}.sh ` +
+      `(репозиторий приложения) → «Первичная настройка». Мануал: docs/features/dynamic-base-url/10_key_revocation.md`,
+  );
+}
+let signPublic;
+try {
+  signPublic = publicFromSeed(signKey);
+} catch (error) {
+  fail(`SIGN_KEY не читается как ключ (${error.message}). Проверь секрет SIGN_KEY_${environment.toUpperCase()}`);
+}
+if (!allowed.includes(signPublic)) {
+  fail(
+    `ключ подписи из SIGN_KEY_${environment.toUpperCase()} (${signPublic.slice(0, 8)}…) не входит в ` +
+      `${args.keys} → ${environment}.released. Его не знает выпущенная сборка приложения — подписанный им ` +
+      `документ приложения отвергнут. Публикация остановлена, ничего не опубликовано. Проверь секрет и ` +
+      `список: crypto/keys-${environment}.sh → «Статус».`,
+  );
 }
 
+// --- опубликованное состояние: последний тег окружения ---
+let published = null; // { tag, version, text, parsed, inner }
+const latest = latestTag(environment, execFileSync('git', ['tag', '--list'], { encoding: 'utf8' }).split('\n'));
+if (latest) {
+  let text;
+  try {
+    text = execFileSync('git', ['show', `${latest.tag}:${configPath}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch {
+    fail(`в теге ${latest.tag} нет ${configPath} — теги публикации должен ставить только CI`);
+  }
+  let parsed;
+  let inner;
+  try {
+    parsed = JSON.parse(text);
+    inner = unwrapEnvelope(parsed);
+  } catch (error) {
+    fail(`${configPath} в теге ${latest.tag} не разбирается (${error.message})`);
+  }
+  if (inner?.version !== latest.version) {
+    fail(`тег ${latest.tag} содержит конфиг с version ${inner?.version}: тег и конфиг не совпадают`);
+  }
+  // config.json в ветке обязан совпадать с опубликованным тегом: иначе его подменили руками
+  // (или прошлая публикация прервалась между коммитом и тегом).
+  if (existsSync(configPath) && readFileSync(configPath, 'utf8') !== text) {
+    fail(
+      `${configPath} в ветке не совпадает с опубликованным тегом ${latest.tag}: файл подменён руками или ` +
+        `прошлая публикация прервалась. Откати файл: git checkout ${latest.tag} -- ${configPath}`,
+    );
+  }
+  published = { ...latest, text, parsed, inner };
+}
+
+const current = published?.inner ?? null;
+const signedByCurrentKey =
+  published !== null &&
+  isEnvelope(published.parsed) &&
+  verifyEd25519(signPublic, fromB64url(published.parsed.p), fromB64url(published.parsed.s));
 const sameContent = current && JSON.stringify(pickContent(current)) === JSON.stringify(desired);
 const sameEtag = (current?.etag ?? undefined) === etag;
-if (sameContent && sameEtag) {
-  console.log(`Конфиг совпадает с опубликованной version ${current.version} — публиковать нечего.`);
+if (sameContent && sameEtag && signedByCurrentKey) {
+  console.log(`Конфиг совпадает с опубликованной version ${current.version} (${published.tag}) — публиковать нечего.`);
   output('changed', 'false');
-  output('version', current.version); // при первом запуске тег может ещё не существовать
+  output('version', current.version);
   process.exit(0);
 }
+const reason = !published
+  ? 'первая публикация'
+  : sameContent && sameEtag
+    ? 'ключ подписи сменился — переподписываю тем же содержимым'
+    : 'изменились хосты или список видео';
+console.log(`Причина: ${reason}.`);
 
-const inner = { version: (current?.version ?? 0) + 1, ...desired };
+const inner = { version: (published?.version ?? 0) + 1, ...desired };
 if (etag) inner.etag = etag;
 
 // Подписываем ТОЧНЫЕ байты конфига; приложение разберёт их без пере-сериализации.

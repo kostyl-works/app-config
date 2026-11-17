@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { fromB64url, publicFromSeed, verifyEd25519 } from '../scripts/crypto.mjs';
 import { unwrapEnvelope } from '../scripts/lib.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -16,7 +17,16 @@ const source = {
 
 // Тестовые ключи подписи/шифрования (SAM-809): build.mjs требует их всегда.
 const SIGN_KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => i)).toString('base64url');
+const SIGN_KEY_2 = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 3 + 1) & 0xff)).toString('base64url');
 const CIPHER_KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 7 + 3) & 0xff)).toString('base64url');
+const PUB = publicFromSeed(SIGN_KEY);
+const PUB_2 = publicFromSeed(SIGN_KEY_2);
+
+/** keys.json: белый список ключей подписи по окружениям. */
+function keysJson(released = [PUB]) {
+  const env = { released, next: released, current: released[0] };
+  return { prod: env, dev: env };
+}
 
 /** Опубликованный config.json → внутренний конфиг (конверт разворачивается, legacy — как есть). */
 function inner(text) {
@@ -68,6 +78,7 @@ function fixture(t) {
   writeJson(join(repo, 'config.json'), { version: 8, ...source });
   writeJson(join(repo, 'dev/hosts.json'), source);
   writeJson(join(repo, 'dev/config.json'), { version: 1, ...source });
+  writeJson(join(repo, 'keys.json'), keysJson());
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'Initial configs');
   git(repo, 'tag', '1.0.8');
@@ -108,45 +119,38 @@ function select(f, name, event, ref = 'refs/heads/main') {
   return { result, output: readFileSync(outputPath, 'utf8').trim() };
 }
 
-function build(f, environment) {
+/** Запуск build.mjs как есть: результат процесса и выходы GITHUB_OUTPUT. */
+function buildRaw(f, environment, signKey = SIGN_KEY) {
   const prefix = environment === 'dev' ? 'dev/' : '';
   const outputPath = join(f.dir, 'build-output.txt');
   writeFileSync(outputPath, '');
-  ok(run(f.repo, process.execPath, [
+  const result = run(f.repo, process.execPath, [
     join(root, 'scripts/build.mjs'), '--hosts', `${prefix}hosts.json`, '--out', `${prefix}config.json`,
-  ], { GITHUB_OUTPUT: outputPath, SIGN_KEY, CIPHER_KEY }));
-  return Object.fromEntries(readFileSync(outputPath, 'utf8').trim().split('\n').map((line) => line.split('=')));
+  ], { GITHUB_OUTPUT: outputPath, SIGN_KEY: signKey, CIPHER_KEY });
+  const outputs = readFileSync(outputPath, 'utf8').trim();
+  return { result, outputs: outputs ? Object.fromEntries(outputs.split('\n').map((line) => line.split('='))) : {} };
+}
+
+function build(f, environment, signKey = SIGN_KEY) {
+  const { result, outputs } = buildRaw(f, environment, signKey);
+  ok(result);
+  return outputs;
 }
 
 function release(f, environment, version) {
   return run(f.repo, 'bash', [join(root, 'scripts/release.sh')], {
-    ...f.env, ENVIRONMENT: environment, VERSION: String(version),
+    ...f.env, ENVIRONMENT: environment, VERSION: String(version), PURGE_RETRY_DELAY: '0',
   });
 }
 
-test('push selects only changed sources across all commits; first push selects both', (t) => {
+test('push event is rejected: publication is manual only', (t) => {
   const f = fixture(t);
   const initial = git(f.repo, 'rev-parse', 'HEAD');
-  const dev = commit(f.repo, 'dev/hosts.json', { ...source, endpoints_enabled: false });
-  let selected = select(f, 'push', { before: initial, after: dev });
-  ok(selected.result);
-  assert.equal(selected.output, 'environments=["dev"]');
-
   const prod = commit(f.repo, 'hosts.json', { ...source, api: ['https://new-api.example.test'] });
-  selected = select(f, 'push', { before: dev, after: prod });
-  ok(selected.result);
-  assert.equal(selected.output, 'environments=["prod"]');
-  selected = select(f, 'push', { before: initial, after: prod });
-  ok(selected.result);
-  assert.equal(selected.output, 'environments=["prod","dev"]');
-
-  const other = commit(f.repo, 'unrelated.json', {});
-  selected = select(f, 'push', { before: prod, after: other });
-  ok(selected.result);
-  assert.equal(selected.output, 'environments=[]');
-  selected = select(f, 'push', { before: '0'.repeat(40), after: other });
-  ok(selected.result);
-  assert.equal(selected.output, 'environments=["prod","dev"]');
+  const selected = select(f, 'push', { before: initial, after: prod });
+  assert.equal(selected.result.status, 1);
+  assert.match(selected.result.stderr, /Автопубликации нет/);
+  assert.equal(selected.output, '');
 });
 
 test('manual selection accepts exactly one environment and rejects other branches or invalid inputs', (t) => {
@@ -162,16 +166,15 @@ test('manual selection accepts exactly one environment and rejects other branche
   const branch = select(f, 'workflow_dispatch', { inputs: { environment: 'dev' } }, 'refs/heads/development');
   assert.equal(branch.result.status, 1);
   assert.match(branch.result.stderr, /только из main/);
-  assert.equal(select(f, 'push', { before: '--help', after: 'invalid' }).result.status, 1);
 });
 
 test('dev bootstrap, updates, retries and prod updates publish independently to a local remote', (t) => {
   const f = fixture(t);
   const originalProd = readFileSync(join(f.repo, 'config.json'), 'utf8');
-  const initial = git(f.repo, 'rev-parse', 'HEAD');
-  assert.deepEqual(build(f, 'dev'), { changed: 'false', version: '1' });
+  // У dev ещё нет тега: первая публикация, конфиг становится подписанным конвертом.
+  assert.deepEqual(build(f, 'dev'), { changed: 'true', version: '1' });
   ok(release(f, 'dev', 1));
-  assert.equal(git(f.repo, 'rev-parse', 'HEAD'), initial);
+  assert.equal(git(f.repo, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), 'dev/config.json');
   assert.deepEqual(inner(git(f.remote, 'show', 'dev-1.0.1:dev/config.json')), { version: 1, ...source });
   assert.equal(readFileSync(join(f.repo, 'config.json'), 'utf8'), originalProd);
   assert.match(readFileSync(f.env.GITHUB_STEP_SUMMARY, 'utf8'), /@dev-1\.0\.1\/dev\/config\.json/);
@@ -201,25 +204,27 @@ test('dev bootstrap, updates, retries and prod updates publish independently to 
   assert.deepEqual(build(f, 'prod'), { changed: 'false', version: '9' });
   ok(release(f, 'prod', 9));
   assert.equal(git(f.repo, 'rev-parse', 'HEAD'), afterProd);
+
+  // Кэш jsDelivr сбрасывается на каждую новую публикацию: dev — @main, prod — @1.
   const purges = readFileSync(f.env.PURGE_LOG, 'utf8').trim().split('\n');
-  assert.equal(purges.length, 1);
-  assert.match(purges[0], /@1\/config\.json$/);
+  assert.equal(purges.filter((line) => /@1\/config\.json$/.test(line)).length, 1);
+  assert.equal(purges.filter((line) => /@main\/dev\/config\.json$/.test(line)).length, 2);
 });
 
 test('release refuses a conflicting tag or version without changing the remote', (t) => {
   const f = fixture(t);
   const remoteHead = git(f.remote, 'rev-parse', 'main');
-  git(f.repo, 'tag', 'dev-1.0.2');
-  git(f.repo, 'push', '-q', 'origin', 'refs/tags/dev-1.0.2');
-  const originalTag = git(f.remote, 'rev-parse', 'dev-1.0.2');
-  writeJson(join(f.repo, 'dev/hosts.json'), { ...source, endpoints_enabled: false });
-  assert.deepEqual(build(f, 'dev'), { changed: 'true', version: '2' });
-  const collision = release(f, 'dev', 2);
+  assert.deepEqual(build(f, 'dev'), { changed: 'true', version: '1' });
+  // Пока собирали, кто-то поставил тег dev-1.0.1 на другой конфиг.
+  git(f.repo, 'tag', 'dev-1.0.1');
+  git(f.repo, 'push', '-q', 'origin', 'refs/tags/dev-1.0.1');
+  const originalTag = git(f.remote, 'rev-parse', 'dev-1.0.1');
+  const collision = release(f, 'dev', 1);
   assert.equal(collision.status, 1);
   assert.match(collision.stdout, /уже существует с другим конфигом/);
-  assert.equal(git(f.remote, 'rev-parse', 'dev-1.0.2'), originalTag);
+  assert.equal(git(f.remote, 'rev-parse', 'dev-1.0.1'), originalTag);
   assert.equal(git(f.remote, 'rev-parse', 'main'), remoteHead);
-  assert.equal(release(f, 'dev', 3).status, 1);
+  assert.equal(release(f, 'dev', 2).status, 1);
   assert.equal(release(f, 'staging', 1).status, 1);
   assert.equal(git(f.remote, 'rev-parse', 'main'), remoteHead);
 });
@@ -229,9 +234,55 @@ test('new dev config starts at version 1 and validates input even without host p
   rmSync(join(f.repo, 'dev/config.json'));
   assert.deepEqual(build(f, 'dev'), { changed: 'true', version: '1' });
   writeJson(join(f.repo, 'dev/hosts.json'), { ...source, api: ['http://invalid.example.test'] });
-  const result = run(f.repo, process.execPath, [
-    join(root, 'scripts/build.mjs'), '--hosts', 'dev/hosts.json', '--out', 'dev/config.json',
-  ], { SIGN_KEY, CIPHER_KEY });
+  const { result } = buildRaw(f, 'dev');
   assert.equal(result.status, 1);
   assert.match(result.stderr, /только https/);
+});
+
+test('signing key outside keys.json is refused before anything is written', (t) => {
+  const f = fixture(t);
+  writeJson(join(f.repo, 'keys.json'), keysJson([PUB_2]));
+  const before = readFileSync(join(f.repo, 'dev/config.json'), 'utf8');
+  const { result, outputs } = buildRaw(f, 'dev');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /не входит в keys\.json → dev\.released/);
+  assert.deepEqual(outputs, {});
+  assert.equal(readFileSync(join(f.repo, 'dev/config.json'), 'utf8'), before);
+});
+
+test('config.json edited in the branch (not matching the tag) stops the build', (t) => {
+  const f = fixture(t);
+  build(f, 'dev');
+  ok(release(f, 'dev', 1));
+  // Кто-то с правом push подложил огромную версию прямо в ветку.
+  writeJson(join(f.repo, 'dev/config.json'), { version: 9007199254740991, ...source });
+  const { result } = buildRaw(f, 'dev');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /не совпадает с опубликованным тегом dev-1\.0\.1/);
+});
+
+test('jsDelivr purge failure warns after 3 attempts but does not fail the release', (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, 'bin/curl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$PURGE_LOG"\nexit 22\n');
+  build(f, 'dev');
+  const result = release(f, 'dev', 1);
+  ok(result);
+  assert.match(result.stdout, /::warning::Кэш jsDelivr не сброшен/);
+  assert.equal(readFileSync(f.env.PURGE_LOG, 'utf8').trim().split('\n').length, 3);
+  assert.equal(inner(git(f.remote, 'show', 'dev-1.0.1:dev/config.json')).version, 1);
+});
+
+test('key rotation re-signs the same content with version + 1', (t) => {
+  const f = fixture(t);
+  build(f, 'dev');
+  ok(release(f, 'dev', 1));
+  // Ротация: CI теперь подписывает ключом 2, он уже в списке выпущенной сборки.
+  writeJson(join(f.repo, 'keys.json'), keysJson([PUB, PUB_2]));
+  const { result, outputs } = buildRaw(f, 'dev', SIGN_KEY_2);
+  ok(result);
+  assert.deepEqual(outputs, { changed: 'true', version: '2' });
+  assert.match(result.stdout, /ключ подписи сменился/);
+  const envelope = JSON.parse(readFileSync(join(f.repo, 'dev/config.json'), 'utf8'));
+  assert.ok(verifyEd25519(PUB_2, fromB64url(envelope.p), fromB64url(envelope.s)));
+  assert.deepEqual(inner(JSON.stringify(envelope)), { version: 2, ...source });
 });

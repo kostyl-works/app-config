@@ -1,0 +1,23 @@
+{
+  "_about": "SAM-809: открытые ключи подписи (секретов нет). released — что знает выпущенная сборка приложения: CI подписывает только ключом из этого списка. next — список для следующего релиза. current — каким ключом сейчас подписывает CI. Порядок — от старого к новому. Ведут crypto/keys-dev.sh и crypto/keys-prod.sh (репозиторий приложения), руками не править. Схема: docs/features/dynamic-base-url/10_key_revocation.md",
+  "prod": {
+    "released": [
+      "uzeNXzcOxlVesRv6wdMC0OY5lMmrJre-80x2-wnBhto",
+      "7__OnojBBBup37zfRnxSjw2qrbh57UOFLEgaY3RnNqA"
+    ],
+    "next": [
+      "uzeNXzcOxlVesRv6wdMC0OY5lMmrJre-80x2-wnBhto",
+      "7__OnojBBBup37zfRnxSjw2qrbh57UOFLEgaY3RnNqA"
+    ],
+    "current": "uzeNXzcOxlVesRv6wdMC0OY5lMmrJre-80x2-wnBhto"
+  },
+  "dev": {
+    "released": [
+      "zsVReJoTzadtVJh_mI0bct4ft5eyMyjsXWZp_kWOn7I"
+    ],
+    "next": [
+      "zsVReJoTzadtVJh_mI0bct4ft5eyMyjsXWZp_kWOn7I"
+    ],
+    "current": "zsVReJoTzadtVJh_mI0bct4ft5eyMyjsXWZp_kWOn7I"
+  }
+}

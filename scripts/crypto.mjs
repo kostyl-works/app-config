@@ -2,14 +2,16 @@
 // приложения (packages/services/endpoint_service/lib/src/crypto/*). Без внешних зависимостей.
 //
 // - Подпись Ed25519 над ТОЧНЫМИ байтами конфига (приватник — сырой 32-байтовый seed base64url,
-//   как его кладёт crypto/keys.sh: последние 32 байта PKCS8 DER).
+//   как его кладут crypto/keys-dev.sh / keys-prod.sh: последние 32 байта PKCS8 DER).
 // - Поточный шифр: keystream = HMAC-SHA256(key, salt || uint32be(index)) по 32 байта, XOR.
 // - Конверт {"p": base64url(bytes конфига), "s": base64url(подпись)}.
-import { createHmac, createPrivateKey, sign as edSign } from 'node:crypto';
+import { createHmac, createPrivateKey, createPublicKey, sign as edSign, verify as edVerify } from 'node:crypto';
 
 const BLOCK = 32;
 // Префикс PKCS8 DER для Ed25519-приватника (16 байт) + 32 байта seed = валидный ключ для Node.
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+// Префикс SPKI DER для Ed25519-открытого ключа (12 байт) + 32 байта ключа.
+const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 /** base64url-строка → Buffer. Принимает и с padding, и без. */
 export function fromB64url(value) {
@@ -45,14 +47,37 @@ export function streamCipher(key, salt, data) {
   return out;
 }
 
-/** Подпись Ed25519 над message. seed — сырой 32-байтовый приватник (base64url или Buffer). */
-export function signEd25519(seed, message) {
+/** Приватник Node из сырого 32-байтового seed (base64url или Buffer). */
+function privateKeyFromSeed(seed) {
   const raw = Buffer.isBuffer(seed) ? seed : fromB64url(seed);
   if (raw.length !== 32) throw new Error(`приватный ключ подписи должен быть 32 байта, получено ${raw.length}`);
-  const der = Buffer.concat([PKCS8_ED25519_PREFIX, raw]);
-  const key = createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+  return createPrivateKey({ key: Buffer.concat([PKCS8_ED25519_PREFIX, raw]), format: 'der', type: 'pkcs8' });
+}
+
+/** Подпись Ed25519 над message. seed — сырой 32-байтовый приватник (base64url или Buffer). */
+export function signEd25519(seed, message) {
   const msg = Buffer.isBuffer(message) ? message : Buffer.from(message);
-  return edSign(null, msg, key); // Ed25519: алгоритм null, подпись детерминирована (RFC 8032)
+  return edSign(null, msg, privateKeyFromSeed(seed)); // Ed25519: алгоритм null, подпись детерминирована (RFC 8032)
+}
+
+/** Открытый ключ (сырые 32 байта, base64url) из закрытого seed — как его печатают crypto/keys-dev.sh / keys-prod.sh. */
+export function publicFromSeed(seed) {
+  const spki = createPublicKey(privateKeyFromSeed(seed)).export({ type: 'spki', format: 'der' });
+  return toB64url(spki.subarray(-32));
+}
+
+/** Проверка подписи Ed25519. publicKey — сырые 32 байта (base64url или Buffer). Ошибка ключа — false. */
+export function verifyEd25519(publicKey, message, signature) {
+  try {
+    const raw = Buffer.isBuffer(publicKey) ? publicKey : fromB64url(publicKey);
+    if (raw.length !== 32) return false;
+    const key = createPublicKey({ key: Buffer.concat([SPKI_ED25519_PREFIX, raw]), format: 'der', type: 'spki' });
+    const msg = Buffer.isBuffer(message) ? message : Buffer.from(message);
+    const sig = Buffer.isBuffer(signature) ? signature : fromB64url(signature);
+    return edVerify(null, msg, key, sig);
+  } catch {
+    return false;
+  }
 }
 
 /**

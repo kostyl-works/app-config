@@ -1,11 +1,10 @@
 name: Publish hosts
-run-name: "hosts (${{ inputs.environment || 'auto' }}): ${{ github.event.head_commit.message || 'ручной запуск' }} (${{ github.actor }})"
+run-name: "hosts (${{ inputs.environment }}): ручной запуск (${{ github.actor }})"
 
-# Оба окружения живут в main. Публикуем только те, чьи hosts.json изменились.
+# SAM-809: публикация ТОЛЬКО вручную — пунктом «Публикация конфига» в crypto/keys.sh (репозиторий
+# приложения) или кнопкой Run workflow. Автопубликации при пуше нет: правка hosts.json сама в
+# прод не уходит. Аварийный путь с телефона: поправить файл в браузере → Run workflow → окружение.
 on:
-  push:
-    branches: [main]
-    paths: [hosts.json, dev/hosts.json, rutube.json, dev/rutube.json]
   workflow_dispatch:
     inputs:
       environment:
@@ -34,11 +33,12 @@ jobs:
     outputs:
       environments: ${{ steps.select.outputs.environments }}
     steps:
-      - uses: actions/checkout@v4
+      # Actions закреплены по хешу коммита: метку v4 владелец может передвинуть на другой код.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -56,21 +56,19 @@ jobs:
       max-parallel: 1
       matrix:
         environment: ${{ fromJSON(needs.select.outputs.environments) }}
+    # Секретов на уровне задачи нет: каждый получает только тот шаг, которому он нужен.
     env:
       ENVIRONMENT: ${{ matrix.environment }}
       HOSTS_PATH: ${{ matrix.environment == 'prod' && 'hosts.json' || 'dev/hosts.json' }}
       CONFIG_PATH: ${{ matrix.environment == 'prod' && 'config.json' || 'dev/config.json' }}
       RUTUBE_PATH: ${{ matrix.environment == 'prod' && 'rutube.json' || 'dev/rutube.json' }}
-      # Ключи подписи и шифрования по окружению (SAM-809). Приватные — только здесь, из секретов.
-      SIGN_KEY: ${{ matrix.environment == 'prod' && secrets.SIGN_KEY_PROD || secrets.SIGN_KEY_DEV }}
-      CIPHER_KEY: ${{ matrix.environment == 'prod' && secrets.CIPHER_KEY_PROD || secrets.CIPHER_KEY_DEV }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: main
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -78,24 +76,30 @@ jobs:
         if: ${{ !inputs.skip_check }}
         run: node scripts/check-hosts.mjs "$HOSTS_PATH" "$CONFIG_PATH"
 
+      # Подпись (SAM-809): закрытый ключ — только этому шагу. keys.json — белый список ключей,
+      # которые знает выпущенная сборка приложения.
       - name: Build
         id: build
-        run: node scripts/build.mjs --hosts "$HOSTS_PATH" --out "$CONFIG_PATH" --rutube "$RUTUBE_PATH"
+        env:
+          SIGN_KEY: ${{ matrix.environment == 'prod' && secrets.SIGN_KEY_PROD || secrets.SIGN_KEY_DEV }}
+          CIPHER_KEY: ${{ matrix.environment == 'prod' && secrets.CIPHER_KEY_PROD || secrets.CIPHER_KEY_DEV }}
+        run: node scripts/build.mjs --hosts "$HOSTS_PATH" --out "$CONFIG_PATH" --rutube "$RUTUBE_PATH" --keys keys.json
 
       - name: Commit, tag, push
         env:
           VERSION: ${{ steps.build.outputs.version }}
-          MESSAGE: ${{ github.event.head_commit.message || 'ручной запуск' }}
+          MESSAGE: ручной запуск (${{ github.actor }})
         run: bash scripts/release.sh
 
-      # Разливаем тот же подписанный конверт в описания видео Rutube (запасной канал при
-      # «белых списках»). Только если конфиг изменился. Токен ротируется и пишется обратно
-      # в секрет своего окружения через PAT (секрет GH_PAT). Каждая задача получает токены
-      # только своего окружения; выбор — в rutubeTokenSource (scripts/lib.mjs).
+      # Тот же подписанный конверт — в описания видео Rutube (запасной канал при «белых
+      # списках»). Запускается всегда: скрипт сверяет каждое описание и пишет только отставшие,
+      # так отставший после сбоя Rutube догоняется следующей публикацией. Токен обменивается,
+      # только если есть что писать, и сохраняется в секрет окружения через GH_PAT СРАЗУ после
+      # обмена. Каждая задача получает токены только своего окружения (rutubeTokenSource).
       # RUTUBE_TOKENS_LEGACY — старый общий секрет: dev читает его, пока нет RUTUBE_TOKENS_DEV.
       - name: Publish to Rutube
-        if: steps.build.outputs.changed == 'true'
         env:
+          CIPHER_KEY: ${{ matrix.environment == 'prod' && secrets.CIPHER_KEY_PROD || secrets.CIPHER_KEY_DEV }}
           RUTUBE_TOKENS_PROD: ${{ matrix.environment == 'prod' && secrets.RUTUBE_TOKENS_PROD || '' }}
           RUTUBE_TOKENS_DEV: ${{ matrix.environment == 'dev' && secrets.RUTUBE_TOKENS_DEV || '' }}
           RUTUBE_TOKENS_LEGACY: ${{ matrix.environment == 'dev' && secrets.RUTUBE_TOKENS || '' }}

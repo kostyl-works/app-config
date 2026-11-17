@@ -52,11 +52,28 @@ else
   PUBLISHED=true
 fi
 
-# У dev — только точные теги, которые не входят в prod-диапазон @1.
-# Purge prod-диапазона — ускоритель: точным версиям он не нужен.
-if [ "$ENVIRONMENT" = prod ] && [ "$PUBLISHED" = true ]; then
-  curl -sS --max-time 30 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@1/config.json" || true
-  echo
+# Сброс кэша jsDelivr: приложение читает prod по диапазону @1, dev — по ветке @main. Без сброса
+# jsDelivr часами отдаёт старый документ. Публикация к этому моменту уже состоялась, поэтому
+# сбой сброса прогон не роняет, но и не глотается молча (SAM-809): 3 попытки, потом предупреждение.
+purge() {
+  local url="$1" attempt
+  for attempt in 1 2 3; do
+    if curl -fsS --max-time 30 "$url"; then
+      echo
+      return 0
+    fi
+    echo "сброс кэша jsDelivr не удался (попытка ${attempt} из 3): ${url}" >&2
+    [ "$attempt" -lt 3 ] && sleep "${PURGE_RETRY_DELAY:-5}"
+  done
+  echo "::warning::Кэш jsDelivr не сброшен: ${url}. Новый документ дойдёт через jsDelivr с задержкой до 12 ч. Сбрось вручную: открой эту ссылку в браузере."
+  return 0
+}
+
+if [ "$PUBLISHED" = true ]; then
+  case "$ENVIRONMENT" in
+    prod) purge "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@1/config.json" ;;
+    dev) purge "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/dev/config.json" ;;
+  esac
 fi
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
