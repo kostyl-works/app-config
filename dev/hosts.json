@@ -1,5 +1,5 @@
 {
-  "endpoints_enabled": false,
+  "endpoints_enabled": true,
   "api": [
     "https://api-litnet.storytest.ru"
   ],
